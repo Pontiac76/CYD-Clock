@@ -1,0 +1,13 @@
+updateurl=http://192.168.4.2:8080
+ssid=Your SSID Network
+password=Your Network Password
+timezone=america/toronto
+# tzinfo is calculated if timezone is present
+tzinfo=EST5EDT,M3.2.0/02:00:00,M11.1.0/02:00:00
+ntpserver=Your NTP Server (IE: Router IP sometimes, otherwise use pool.ntp.org)
+tformat=12
+brightness=255
+latitude=43.4643
+longitude=-80.5204
+WeekDays=Mo,Tu,We,Th,Fr,Sa,Su
+MonthName=Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec

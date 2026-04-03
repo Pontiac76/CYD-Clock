@@ -1,0 +1,8 @@
+/.pio
+/.vscode
+/__pycache__
+/lib
+/SD_Card/config.txt
+/SD_Card/config.rendered
+/data/config.txt
+/test
