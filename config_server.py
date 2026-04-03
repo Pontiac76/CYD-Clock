@@ -82,6 +82,7 @@ def load_source_lines() -> list[str]:
 def parse_config_lines(lines: list[str]):
     parsed = []
     timezone_value = None
+    tzinfo_value = None
 
     for raw_line in lines:
         clean = raw_line.rstrip("\r\n")
@@ -103,13 +104,15 @@ def parse_config_lines(lines: list[str]):
 
         if key == "timezone":
             timezone_value = value
+        elif key == "tzinfo":
+            tzinfo_value = value
 
-    return parsed, timezone_value
+    return parsed, timezone_value, tzinfo_value
 
 
 def rebuild_config_text() -> bytes:
     lines = load_source_lines()
-    parsed, timezone_value = parse_config_lines(lines)
+    parsed, timezone_value, tzinfo_value = parse_config_lines(lines)
 
     resolved_zone = None
     generated_tzinfo = None
@@ -128,6 +131,8 @@ def rebuild_config_text() -> bytes:
             generated_tzinfo = "GMT0"
 
         # log(f'timezone "{timezone_value}" resolved to "{resolved_zone}", tzinfo="{generated_tzinfo}"')
+    elif tzinfo_value is None or tzinfo_value.strip() == "":
+        generated_tzinfo = "GMT0"
 
     if SOURCE_FILE.exists():
         mtime = datetime.fromtimestamp(SOURCE_FILE.stat().st_mtime)

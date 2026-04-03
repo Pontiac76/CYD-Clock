@@ -19,6 +19,7 @@
 #define XPT2046_MISO 39
 #define XPT2046_CLK 25
 #define XPT2046_CS 33
+#define ENABLE_TOUCH 1
 
 //SD Card Pin
 #define SD_CS 5
@@ -40,11 +41,10 @@ String updateurl;
 constexpr int WEEKDAY_COUNT = 7;
 constexpr int MONTH_COUNT = 12;
 constexpr int MAX_TRANSLATION_LENGTH = 24;
-
 // Used to delay the timer when poking the updateurl
 unsigned long next_update_check = 0;
 
-SPIClass mySpi = SPIClass(VSPI);
+SPIClass mySpi = SPIClass(HSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 
@@ -64,6 +64,10 @@ String MonthName[MONTH_COUNT] = {
   "July", "August", "September", "October", "November", "December"
 };
 String Dummy;
+String current_config_text;
+bool sd_ready = false;
+bool touch_ready = false;
+bool touch_initialized = false;
 
 int yy_mem = 0;
 int mm_mem = 0;
@@ -73,6 +77,78 @@ int event_tm_min = -1;
 int event_tm_sec = -1;
 
 int next_update_modular = 15;
+
+void apply_config_from_string(String content);
+
+void initialize_touch()
+{
+  #if ENABLE_TOUCH
+  if (!touch_initialized)
+  {
+    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+    ts.begin(mySpi);
+    ts.setRotation(1);
+    touch_initialized = true;
+  }
+
+  digitalWrite(XPT2046_CS, HIGH);
+  touch_ready = true;
+  #endif
+}
+
+void suspend_touch_for_sd()
+{
+  #if ENABLE_TOUCH
+  if (touch_ready)
+  {
+    digitalWrite(XPT2046_CS, HIGH);
+    touch_ready = false;
+  }
+  #endif
+}
+
+void resume_touch_after_sd()
+{
+  #if ENABLE_TOUCH
+  if (!touch_ready)
+  {
+    initialize_touch();
+  }
+  #endif
+}
+
+bool begin_sd_session()
+{
+  suspend_touch_for_sd();
+  digitalWrite(XPT2046_CS, HIGH);
+
+  if (sd_ready)
+  {
+    SD.end();
+    sd_ready = false;
+  }
+
+  if (!SD.begin(SD_CS))
+  {
+    Serial.println("SD-Card: Failure");
+    resume_touch_after_sd();
+    return false;
+  }
+
+  sd_ready = true;
+  return true;
+}
+
+void end_sd_session()
+{
+  if (sd_ready)
+  {
+    SD.end();
+    sd_ready = false;
+  }
+
+  resume_touch_after_sd();
+}
 
 bool wifi_start_STA() //Start WiFi Mode STA
 {
@@ -262,6 +338,19 @@ bool configKeyEquals(const String &normalizedKey, const char *expectedKey)
   return normalizedKey == normalizedExpected;
 }
 
+bool stringArrayEquals(const String *left, const String *right, int count)
+{
+  for (int index = 0; index < count; ++index)
+  {
+    if (left[index] != right[index])
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 void parseTranslationList(String value, String destination[], int destinationSize)
 {
   int index = 0;
@@ -333,64 +422,156 @@ void parseConfigLine(String line)
 bool write_config_to_sd(String content)
 {
   File configFile;
-
-  if (!SD.begin(SD_CS))
+  size_t bytesWritten = 0;
+  bool success = false;
+  Serial.println("write_config_to_sd: Attempting write");
+  if (!begin_sd_session())
   {
-    Serial.println("SD-Card: Failure during write");
-    return false;
+    goto write_config_to_sd_exit;
+  }
+  Serial.println("write_config_to_sd: Rotating existing config");
+
+  if (SD.exists("/config.bak"))
+  {
+    if (!SD.remove("/config.bak"))
+    {
+      Serial.println("Cannot remove existing /config.bak");
+      goto write_config_to_sd_exit;
+    }
+    Serial.println("write_config_to_sd: removed /config.bak");
   }
 
   if (SD.exists("/config.txt"))
   {
-    if (!SD.remove("/config.txt"))
+    if (!SD.rename("/config.txt", "/config.bak"))
     {
-      Serial.println("Cannot remove existing /config.txt");
-      SD.end();
-      return false;
+      Serial.println("Cannot rename /config.txt to /config.bak");
+      goto write_config_to_sd_exit;
     }
+    Serial.println("write_config_to_sd: renamed /config.txt to /config.bak");
   }
+
+  Serial.println("write_config_to_sd: Attempting to open config.txt for write");
 
   configFile = SD.open("/config.txt", FILE_WRITE);
   if (!configFile)
   {
     Serial.println("Cannot open /config.txt for write");
-    SD.end();
+    goto write_config_to_sd_exit;
+  } else {
+    Serial.println("write_config_to_sd: Opened for write");
+  }
+
+  bytesWritten = configFile.print(content);
+  configFile.close();
+
+  if (bytesWritten != content.length())
+  {
+    Serial.println("write_config_to_sd: short write");
+    if (SD.exists("/config.txt"))
+    {
+      SD.remove("/config.txt");
+    }
+    if (SD.exists("/config.bak"))
+    {
+      SD.rename("/config.bak", "/config.txt");
+      Serial.println("write_config_to_sd: restored /config.bak to /config.txt");
+    }
+    goto write_config_to_sd_exit;
+  }
+
+  Serial.println("write_config_to_sd: Config written");
+
+  Serial.println("Configuration File overwritten");
+  success = true;
+
+write_config_to_sd_exit:
+  end_sd_session();
+  return success;
+}
+
+bool read_config_text_from_sd(String &content)
+{
+  File configFile;
+  bool success = false;
+
+  content = "";
+  if (!begin_sd_session())
+  {
+    goto read_config_text_from_sd_exit;
+  }
+
+  configFile = SD.open("/config.txt");
+  if (!configFile)
+  {
+    goto read_config_text_from_sd_exit;
+  }
+
+  while (configFile.available())
+  {
+    content += char(configFile.read());
+  }
+
+  configFile.close();
+  success = true;
+
+read_config_text_from_sd_exit:
+  end_sd_session();
+  return success;
+}
+
+bool sync_config_to_sd_and_memory(String newContent, bool &changed)
+{
+  String verifiedContent;
+
+  changed = false;
+
+  if (current_config_text == newContent)
+  {
+    Serial.println("sync_config_to_sd_and_memory: no config changes");
+    return true;
+  }
+
+  Serial.println("sync_config_to_sd_and_memory: config changed, writing payload");
+  if (!write_config_to_sd(newContent))
+  {
+    Serial.println("sync_config_to_sd_and_memory: write failed");
     return false;
   }
 
-  configFile.print(content);
-  configFile.close();
-  SD.end();
+  if (!read_config_text_from_sd(verifiedContent))
+  {
+    Serial.println("sync_config_to_sd_and_memory: verify read failed");
+    return false;
+  }
 
-  Serial.println("Configuration File overwritten");
+  if (verifiedContent != newContent)
+  {
+    Serial.println("sync_config_to_sd_and_memory: verify mismatch");
+    return false;
+  }
+
+  current_config_text = verifiedContent;
+  changed = true;
+  Serial.println("sync_config_to_sd_and_memory: verified");
   return true;
 }
 
 // read config.txt from SD Card
 void read_sd()
 {
-  if (!SD.begin(SD_CS)) 
+  Serial.println("read_sd: Begin");
+  if (read_config_text_from_sd(current_config_text))
   {
-    Serial.println("SD-Card: Failure");
-    return;
+    Serial.println("SD-Card: Initialization");
+    apply_config_from_string(current_config_text);
   }
-  Serial.println("SD-Card: Initialization");
-
-  File configFile = SD.open("/config.txt");
-  if (configFile) 
+  else
   {
-    while (configFile.available()) 
-    {
-      String line = configFile.readStringUntil('\n');
-      parseConfigLine(line);
-    }
-    configFile.close();
-  } 
-  else 
-  {
+    current_config_text = "";
     Serial.println("Configuration File not Found -- Using Defaults.");
   }
-  SD.end();
+  Serial.println("read_sd: End");
 }
 
 bool bootstrap_config_from_server()
@@ -454,10 +635,18 @@ bool bootstrap_config_from_server()
     return false;
   }
 
-  if (!write_config_to_sd(payload))
+  bool changed = false;
+  if (!sync_config_to_sd_and_memory(payload, changed))
   {
     Serial.println("Failed to write downloaded config");
     tft.println("Write config failed");
+    return false;
+  }
+
+  if (!changed)
+  {
+    Serial.println("Bootstrap config unchanged");
+    tft.println("Bootstrap unchanged");
     return false;
   }
 
@@ -512,6 +701,8 @@ bool SoftTimer(unsigned long time_period_set)
 void setup() 
 {
   Serial.begin(115200);
+  pinMode(XPT2046_CS, OUTPUT);
+  digitalWrite(XPT2046_CS, HIGH);
 
   // Start the tft display early so status text works
   tft.init();
@@ -568,9 +759,9 @@ void setup()
   }
 
   // Start the SPI for the touch screen and init the TS library
-  mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-  ts.begin(mySpi);
-  ts.setRotation(1);
+  #if ENABLE_TOUCH
+  initialize_touch();
+  #endif
 
   delay(100);
 }
@@ -630,7 +821,20 @@ bool poll_update_server()
   String old_password = password;
   String old_tzinfo = tzinfo;
   String old_ntpserver = ntpserver;
+  String old_tformat = tformat;
   String old_updateurl = updateurl;
+  String oldWeekDays[WEEKDAY_COUNT];
+  String oldMonthName[MONTH_COUNT];
+
+  for (int index = 0; index < WEEKDAY_COUNT; ++index)
+  {
+    oldWeekDays[index] = WeekDays[index];
+  }
+
+  for (int index = 0; index < MONTH_COUNT; ++index)
+  {
+    oldMonthName[index] = MonthName[index];
+  }
 
   if (updateurl == "")
   {
@@ -648,7 +852,7 @@ bool poll_update_server()
 
   Serial.print("Update check: ");
   Serial.println(updateurl);
-
+  
   http.begin(updateurl);
   http.setTimeout(1000);
   httpCode = http.GET();
@@ -678,12 +882,32 @@ bool poll_update_server()
     return false;
   }
 
-  apply_config_from_string(payload);
+  bool changed = false;
+  if (!sync_config_to_sd_and_memory(payload, changed))
+  {
+    Serial.println("Update check: failed to sync config");
+    return false;
+  }
+
+  if (!changed)
+  {
+    return true;
+  }
+
+  apply_config_from_string(current_config_text);
 
   if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
   {
     apply_runtime_NTP_config();
-    // Serial.println("Timezone/NTP settings updated");
+    event_tm_hour = -1;
+    event_tm_min = -1;
+    event_tm_sec = -1;
+  }
+
+  if (!stringArrayEquals(WeekDays, oldWeekDays, WEEKDAY_COUNT) ||
+      !stringArrayEquals(MonthName, oldMonthName, MONTH_COUNT) ||
+      (tformat != old_tformat))
+  {
     event_tm_hour = -1;
     event_tm_min = -1;
     event_tm_sec = -1;
@@ -824,7 +1048,8 @@ void loop()
   }
 
   // EVENT Pen touch
-  if (ts.tirqTouched() && ts.touched())  {
+  #if ENABLE_TOUCH
+  if (touch_ready && ts.tirqTouched() && ts.touched())  {
     TS_Point p = ts.getPoint();
     printTouchToSerial(p);
     // Adjust brightness
@@ -852,6 +1077,7 @@ void loop()
     }
     delay(300);
   }
+  #endif
 }
 
 
