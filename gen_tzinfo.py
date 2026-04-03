@@ -90,6 +90,9 @@ def get_zdump_lines(zone):
 
 
 def build_posix_tz_from_zdump(zone, year=None):
+    if zone == "UTC":
+        return "GMT0"
+
     if year is None:
         year = datetime.now().year
 
@@ -99,7 +102,7 @@ def build_posix_tz_from_zdump(zone, year=None):
         if item is not None:
             parsed.append(item)
 
-    if len(parsed) < 2:
+    if len(parsed) == 0:
         raise RuntimeError(f"Not enough zdump data for zone {zone}")
 
     dst_start = None
@@ -115,23 +118,38 @@ def build_posix_tz_from_zdump(zone, year=None):
         if previous["isdst"] == 1 and current["isdst"] == 0:
             dst_end = (previous, current)
 
+    if dst_start is not None and dst_end is not None:
+        start_prev, start_curr = dst_start
+        end_prev, end_curr = dst_end
+
+        std_abbr = start_prev["abbr"]
+        std_offset = gmtoff_to_posix_offset(start_prev["gmtoff"])
+        dst_abbr = start_curr["abbr"]
+
+        start_local_transition = start_prev["local_dt"] + timedelta(seconds=1)
+        end_local_transition = end_prev["local_dt"] + timedelta(seconds=1)
+
+        start_rule = format_rule(start_local_transition)
+        end_rule = format_rule(end_local_transition)
+
+        return f"{std_abbr}{std_offset}{dst_abbr},{start_rule},{end_rule}"
+
+    std_candidates = [
+        item for item in parsed
+        if item["isdst"] == 0 and item["local_dt"].year == year
+    ]
+    if not std_candidates:
+        std_candidates = [item for item in parsed if item["isdst"] == 0]
+
+    if not std_candidates:
+        raise RuntimeError(f"Could not determine standard offset for {zone}")
+
+    std_choice = max(std_candidates, key=lambda item: item["local_dt"])
+    std_abbr = std_choice["abbr"]
+    std_offset = gmtoff_to_posix_offset(std_choice["gmtoff"])
+
     if dst_start is None or dst_end is None:
-        raise RuntimeError(f"Could not find both DST transitions for {zone} in {year}")
-
-    start_prev, start_curr = dst_start
-    end_prev, end_curr = dst_end
-
-    std_abbr = start_prev["abbr"]
-    dst_abbr = start_curr["abbr"]
-    std_offset = gmtoff_to_posix_offset(start_prev["gmtoff"])
-
-    start_local_transition = start_prev["local_dt"] + timedelta(seconds=1)
-    end_local_transition = end_prev["local_dt"] + timedelta(seconds=1)
-
-    start_rule = format_rule(start_local_transition)
-    end_rule = format_rule(end_local_transition)
-
-    return f"{std_abbr}{std_offset}{dst_abbr},{start_rule},{end_rule}"
+        return f"{std_abbr}{std_offset}"
 
 
 if __name__ == "__main__":
