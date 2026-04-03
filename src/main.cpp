@@ -25,9 +25,9 @@
 
 //Backlight Pin
 #define backlightPin 21
-int brightness = 128; // Helligkeit (0-255)
+int brightness = 128; // Brightness (0-255)
 
-// RGB Umwandlung
+// RGB conversion
 #define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
 
 // Timer Elapsed Constant
@@ -48,7 +48,7 @@ SPIClass mySpi = SPIClass(VSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 
-//System Variablen
+// System variables
 String ssid;
 String password;
 String tzinfo;
@@ -170,7 +170,7 @@ uint8_t GetWeekday(uint16_t y, uint8_t m, uint8_t d)
 // Check whether the year is a leap year
 bool IsLeapYear(uint16_t y) 
 {
-  return  !(y % 4) && ((y % 100) || !(y % 400)); // Schaltjahrberechnung (true = Schaltjahr, false = kein Schaltjahr)
+  return  !(y % 4) && ((y % 100) || !(y % 400)); // Leap year calculation (true = leap year, false = not a leap year)
 }
 
 // Number of days in the month
@@ -189,24 +189,24 @@ uint16_t GetDayOfYear(uint16_t y, uint8_t m, uint8_t d);
 uint8_t GetWeekNumber(uint16_t y, uint8_t m, uint8_t d) 
 {
   bool LeapYear;
-  uint16_t doy = GetDayOfYear(y, m, d);  // Anzahl der Tage im Jahr ermitteln
-  uint8_t wd = GetWeekday(y, m, d);      // Wochentag ermitteln
-  uint8_t wnr = (doy - wd + 10) / 7;     // die Wochennummer berechnen (angepasst)
+  uint16_t doy = GetDayOfYear(y, m, d);  // Determine the day number within the year
+  uint8_t wd = GetWeekday(y, m, d);      // Determine the weekday
+  uint8_t wnr = (doy - wd + 10) / 7;     // Calculate the week number (adjusted)
 
-  if (wnr == 0) {                        // wenn die Wochennummer Null ergibt, dann liegt der Tag am Anfang des Jahres (1. Sonderfall)
-    wd = GetWeekday(y - 1, 12, 31);      // den letzten Wochentag aus dem Vorjahr ermitteln
-    LeapYear = IsLeapYear(y - 1);        // ermitteln, ob es sich beim Vorjahr um ein Schaltjahr handelt
-    if (wd < 4) {                        // wenn der 31.12. vor dem Donnerstag liegt, dann...
-      wnr = 1;                           // ist das die erste Woche des Jahres
-    } else {                             // anderenfalls muss ermittelt werden, ob es eine 53. Woche gibt (3. Sonderfall)
+  if (wnr == 0) {                        // If the week number is zero, the day falls at the start of the year (special case 1)
+    wd = GetWeekday(y - 1, 12, 31);      // Determine the last weekday of the previous year
+    LeapYear = IsLeapYear(y - 1);        // Determine whether the previous year was a leap year
+    if (wd < 4) {                        // If December 31 falls before Thursday, then...
+      wnr = 1;                           // it belongs to the first week of the year
+    } else {                             // otherwise determine whether there is a 53rd week (special case 3)
       wnr = ((wd == 4) || (LeapYear && wd == 5)) ? 53 : 52;
     }
-  } else if (wnr == 53) {                // wenn die Wochennummer 53 ergibt, dann liegt der Tag am Ende des Jahres (2. Sonderfall)
-    wd = GetWeekday(y, 12, 31);          // den letzten Wochentag aus diesem Jahr ermitteln
-    LeapYear = IsLeapYear(y);            // ermitteln, ob es sich bei diesem Jahr um ein Schaltjahr handelt
-    if (wd < 4) {                        // wenn der 31.12. vor dem Donnerstag liegt, dann...
-      wnr = 1;                           // ist das die erste Woche des nächsten Jahres
-    } else {                             // anderenfalls muss ermittelt werden, ob es eine 53. Woche gibt (3. Sonderfall)
+  } else if (wnr == 53) {                // If the week number is 53, the day falls at the end of the year (special case 2)
+    wd = GetWeekday(y, 12, 31);          // Determine the last weekday of this year
+    LeapYear = IsLeapYear(y);            // Determine whether this year is a leap year
+    if (wd < 4) {                        // If December 31 falls before Thursday, then...
+      wnr = 1;                           // it belongs to the first week of the next year
+    } else {                             // otherwise determine whether there is a 53rd week (special case 3)
       wnr = ((wd == 4) || (LeapYear && wd == 5)) ? 53 : 52;
     }
   }
@@ -712,9 +712,9 @@ void loop()
   time(&now);
   struct tm *utctime = gmtime(&now);
 
-  static char localtimeString[10]; // Buffer für die Zeit im Format HH.:MM:SS
-  static char locaxtimeString[10]; // Buffer für die Zeit im Format HH.:MM SS
-  char utctimeString[7]; // Buffer für die Zeit im Format HH:MM
+  static char localtimeString[10]; // Buffer for time in HH:MM:SS format
+  static char locaxtimeString[10]; // Buffer for time in HH MM format
+  char utctimeString[7]; // Buffer for time in HH:MM format
   char dateString[40]; // Buffer for long translated month names
   char hourString[3]; //HH
   int timeZone;
@@ -730,21 +730,21 @@ void loop()
          MonthName[localtime.tm_mon].c_str(),
          localtime.tm_mday,
          localtime.tm_year + 1900);
-    // Berechne die Zeitzone basierend auf der Differenz zwischen lokaler Zeit und UTC-Zeit 
+    // Calculate the time zone based on the difference between local time and UTC
 
     tft.println("NTP Sync");
-    configTzTime(tzinfo.c_str(), ntpserver.c_str()); // ESP32 Systemzeit mit NTP Synchronisieren
+    configTzTime(tzinfo.c_str(), ntpserver.c_str()); // Synchronize ESP32 system time with NTP
     delay(1000);
     getLocalTime(&localtime);
 
-    //timeZone = (mktime(&localtime) - mktime(utctime)) / 3600; // Differenz in Stunden
+    //timeZone = (mktime(&localtime) - mktime(utctime)) / 3600; // Difference in hours
     
 	  struct tm localtime_copy = localtime;
-	  localtime_copy.tm_isdst = 0; // DST deaktivieren
+	  localtime_copy.tm_isdst = 0; // Disable DST
 	  timeZone = (mktime(&localtime_copy) - mktime(utctime)) / 3600;
 	
    
-    // Zeichnet die Uhr neu
+    // Redraw the clock
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.setCursor (0,0);
