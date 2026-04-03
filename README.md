@@ -54,3 +54,16 @@ In its current form, `config_server.py` reads the source config file, normalizes
 The `gen_tzinfo.py` script performs the same timezone-conversion job as a standalone utility, and appears to serve as a simple helper or prototype for the `tzinfo` generation logic now built into `config_server.py`.
 
 On Windows, the `windows_8080.ps1` script forwards port `8080` from Windows into WSL so the CYD can reach a config server running there and obtain updates.
+
+## Original Source
+https://github.com/barni007-pro/w_Display_CYD
+
+CYD-Clock began as a local adaptation of the `w_Display_CYD` codebase. I originally chose that project because it closely matched the behavior and structure I wanted.
+
+The original project was built for the Arduino IDE, but I found the build workflow frustratingly slow for iterative development. Even very small changes always triggered a full rebuild, and I did not find a practical way to change that behavior within the Arduino IDE. After spending a couple of days porting the project, I moved the code to PlatformIO, which felt more natural for my workflow and significantly improved build times.
+
+That said, the Arduino IDE and PlatformIO manage dependencies and resources differently, so the original code did not transfer over without work. Bringing it into PlatformIO required meaningful changes to get everything functioning correctly.
+
+While CYD-Clock has its roots in `w_Display_CYD`, this repository is not a fork. I started from a downloaded ZIP of the original project, extracted it locally, and then substantially reworked it to fit my own goals. Since then, the project has changed significantly: core logic has been overhauled, input sanitization has been added, and the calendar functionality has been removed entirely.
+
+CYD-Clock is a personal, non-commercial project. It is somewhat niche, somewhat advanced, and depends on external tooling and home-hosted resources that most users are unlikely to have or want to maintain.
