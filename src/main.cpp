@@ -41,6 +41,8 @@ String updateurl;
 constexpr int WEEKDAY_COUNT = 7;
 constexpr int MONTH_COUNT = 12;
 constexpr int MAX_TRANSLATION_LENGTH = 24;
+constexpr int MAX_SCHEDULE_ENTRIES = 32;
+constexpr int MAX_VISIBLE_SCHEDULE_ENTRIES = 3;
 // Used to delay the timer when poking the updateurl
 unsigned long next_update_check = 0;
 
@@ -63,8 +65,10 @@ String MonthName[MONTH_COUNT] = {
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December"
 };
+String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
 String Dummy;
 String current_config_text;
+String system_id;
 bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
@@ -79,6 +83,7 @@ int event_tm_sec = -1;
 int next_update_modular = 15;
 
 void apply_config_from_string(String content);
+bool shouldShowScheduleEntry(const String &entry, const struct tm &localtime);
 
 void initialize_touch()
 {
@@ -338,6 +343,56 @@ bool configKeyEquals(const String &normalizedKey, const char *expectedKey)
   return normalizedKey == normalizedExpected;
 }
 
+int parseScheduleIndex(const String &normalizedKey)
+{
+  const String prefix = "schedule";
+  String indexText;
+
+  if (!normalizedKey.startsWith(prefix))
+  {
+    return -1;
+  }
+
+  indexText = normalizedKey.substring(prefix.length());
+  if (indexText == "")
+  {
+    return -1;
+  }
+
+  for (int index = 0; index < indexText.length(); ++index)
+  {
+    if (!isDigit(indexText.charAt(index)))
+    {
+      return -1;
+    }
+  }
+
+  int parsedIndex = indexText.toInt();
+  if ((parsedIndex < 0) || (parsedIndex >= MAX_SCHEDULE_ENTRIES))
+  {
+    return -1;
+  }
+
+  return parsedIndex;
+}
+
+String sanitizeSystemId(String value)
+{
+  String sanitized = "";
+
+  for (int index = 0; index < value.length(); ++index)
+  {
+    char current = value.charAt(index);
+
+    if (isalnum(static_cast<unsigned char>(current)))
+    {
+      sanitized += current;
+    }
+  }
+
+  return sanitized;
+}
+
 bool stringArrayEquals(const String *left, const String *right, int count)
 {
   for (int index = 0; index < count; ++index)
@@ -349,6 +404,664 @@ bool stringArrayEquals(const String *left, const String *right, int count)
   }
 
   return true;
+}
+
+bool parseTimeSpec(const String &value, int &minutesSinceMidnight, bool &wildcard)
+{
+  int separatorIndex;
+  String hourPart;
+  String minutePart;
+
+  wildcard = false;
+  minutesSinceMidnight = 0;
+
+  if (value == "*")
+  {
+    wildcard = true;
+    return true;
+  }
+
+  separatorIndex = value.indexOf(':');
+  if (separatorIndex == -1)
+  {
+    return false;
+  }
+
+  hourPart = value.substring(0, separatorIndex);
+  minutePart = value.substring(separatorIndex + 1);
+  hourPart.trim();
+  minutePart.trim();
+
+  for (int index = 0; index < hourPart.length(); ++index)
+  {
+    if (!isDigit(hourPart.charAt(index)))
+    {
+      return false;
+    }
+  }
+
+  for (int index = 0; index < minutePart.length(); ++index)
+  {
+    if (!isDigit(minutePart.charAt(index)))
+    {
+      return false;
+    }
+  }
+
+  int hour = hourPart.toInt();
+  int minute = minutePart.toInt();
+  if ((hour < 0) || (hour > 23) || (minute < 0) || (minute > 59))
+  {
+    return false;
+  }
+
+  minutesSinceMidnight = (hour * 60) + minute;
+  return true;
+}
+
+String formatMinutesForDisplay(int minutesSinceMidnight)
+{
+  char buffer[16];
+  int hour = minutesSinceMidnight / 60;
+  int minute = minutesSinceMidnight % 60;
+
+  if (tformat == "24")
+  {
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", hour, minute);
+    return String(buffer);
+  }
+
+  int hour12 = hour % 12;
+  const char *suffix = (hour < 12) ? "am" : "pm";
+  if (hour12 == 0)
+  {
+    hour12 = 12;
+  }
+
+  snprintf(buffer, sizeof(buffer), "%2d:%02d%s", hour12, minute, suffix);
+  return String(buffer);
+}
+
+String formatScheduleDisplayRange(const String &entry)
+{
+  int firstSeparator = entry.indexOf('|');
+  int secondSeparator;
+  int thirdSeparator;
+  String startSpec;
+  String endSpec;
+  int startMinutes = 0;
+  int endMinutes = 0;
+  bool startWildcard = false;
+  bool endWildcard = false;
+
+  if (firstSeparator == -1)
+  {
+    return "";
+  }
+
+  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  if (secondSeparator == -1)
+  {
+    return "";
+  }
+
+  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  if (thirdSeparator == -1)
+  {
+    return "";
+  }
+
+  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+  startSpec.trim();
+  endSpec.trim();
+
+  if (!parseTimeSpec(startSpec, startMinutes, startWildcard) ||
+      !parseTimeSpec(endSpec, endMinutes, endWildcard))
+  {
+    return "";
+  }
+
+  if (startWildcard && endWildcard)
+  {
+    return "All Day        ";
+  }
+
+  if (startWildcard)
+  {
+    return String("Until ") + formatMinutesForDisplay(endMinutes) + String("  ");
+  }
+
+  if (endWildcard)
+  {
+    return String("From ") + formatMinutesForDisplay(startMinutes) + String("   ");
+  }
+
+  return formatMinutesForDisplay(startMinutes) + "-" + formatMinutesForDisplay(endMinutes);
+}
+
+String extractScheduleTitle(const String &entry)
+{
+  int firstSeparator = entry.indexOf('|');
+  int secondSeparator;
+  int thirdSeparator;
+
+  if (firstSeparator == -1)
+  {
+    return entry;
+  }
+
+  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  if (secondSeparator == -1)
+  {
+    return entry;
+  }
+
+  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  if (thirdSeparator == -1)
+  {
+    return entry;
+  }
+
+  String title = entry.substring(thirdSeparator + 1);
+  title.trim();
+  return title;
+}
+
+String buildScheduleDisplayText(const String &entry)
+{
+  String displayRange = formatScheduleDisplayRange(entry);
+  String scheduleTitle = extractScheduleTitle(entry);
+
+  if (displayRange == "")
+  {
+    return scheduleTitle;
+  }
+
+  return "[" + displayRange + "] " + scheduleTitle;
+}
+
+bool parseScheduleTimeWindow(const String &entry, int &startMinutes, bool &startWildcard, int &endMinutes, bool &endWildcard)
+{
+  int firstSeparator = entry.indexOf('|');
+  int secondSeparator;
+  int thirdSeparator;
+  String startSpec;
+  String endSpec;
+
+  startMinutes = 0;
+  endMinutes = 0;
+  startWildcard = false;
+  endWildcard = false;
+
+  if (firstSeparator == -1)
+  {
+    return false;
+  }
+
+  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  if (secondSeparator == -1)
+  {
+    return false;
+  }
+
+  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  if (thirdSeparator == -1)
+  {
+    return false;
+  }
+
+  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+  startSpec.trim();
+  endSpec.trim();
+
+  return parseTimeSpec(startSpec, startMinutes, startWildcard) &&
+         parseTimeSpec(endSpec, endMinutes, endWildcard);
+}
+
+int getScheduleSortRank(const String &entry)
+{
+  int startMinutes = 0;
+  int endMinutes = 0;
+  bool startWildcard = false;
+  bool endWildcard = false;
+
+  if (!parseScheduleTimeWindow(entry, startMinutes, startWildcard, endMinutes, endWildcard))
+  {
+    return 3;
+  }
+
+  if (startWildcard && endWildcard)
+  {
+    return 0;
+  }
+
+  if (startWildcard)
+  {
+    return 1;
+  }
+
+  return 2;
+}
+
+bool shouldScheduleEntrySortBefore(const String &leftEntry, const String &rightEntry)
+{
+  int leftRank = getScheduleSortRank(leftEntry);
+  int rightRank = getScheduleSortRank(rightEntry);
+  int leftStartMinutes = 0;
+  int rightStartMinutes = 0;
+  int leftEndMinutes = 0;
+  int rightEndMinutes = 0;
+  bool leftStartWildcard = false;
+  bool rightStartWildcard = false;
+  bool leftEndWildcard = false;
+  bool rightEndWildcard = false;
+  String leftTitle;
+  String rightTitle;
+
+  if (leftRank != rightRank)
+  {
+    return leftRank < rightRank;
+  }
+
+  parseScheduleTimeWindow(leftEntry, leftStartMinutes, leftStartWildcard, leftEndMinutes, leftEndWildcard);
+  parseScheduleTimeWindow(rightEntry, rightStartMinutes, rightStartWildcard, rightEndMinutes, rightEndWildcard);
+
+  if (leftRank == 2 && (leftStartMinutes != rightStartMinutes))
+  {
+    return leftStartMinutes < rightStartMinutes;
+  }
+
+  leftTitle = extractScheduleTitle(leftEntry);
+  rightTitle = extractScheduleTitle(rightEntry);
+  leftTitle.trim();
+  rightTitle.trim();
+  leftTitle.toLowerCase();
+  rightTitle.toLowerCase();
+
+  return leftTitle < rightTitle;
+}
+
+int collectSortedVisibleScheduleIndices(const struct tm &localtime, int destination[], int capacity)
+{
+  int count = 0;
+
+  for (int index = 0; index < MAX_SCHEDULE_ENTRIES; ++index)
+  {
+    if (ScheduleEntries[index] == "")
+    {
+      continue;
+    }
+
+    if (!shouldShowScheduleEntry(ScheduleEntries[index], localtime))
+    {
+      continue;
+    }
+
+    if (count < capacity)
+    {
+      destination[count] = index;
+      ++count;
+    }
+  }
+
+  for (int left = 0; left < count - 1; ++left)
+  {
+    for (int right = left + 1; right < count; ++right)
+    {
+      if (shouldScheduleEntrySortBefore(ScheduleEntries[destination[right]], ScheduleEntries[destination[left]]))
+      {
+        int temp = destination[left];
+        destination[left] = destination[right];
+        destination[right] = temp;
+      }
+    }
+  }
+
+  return count;
+}
+
+bool isCurrentTimeInRange(const struct tm &localtime, const String &startSpec, const String &endSpec)
+{
+  int currentMinutes = (localtime.tm_hour * 60) + localtime.tm_min;
+  int startMinutes = 0;
+  int endMinutes = 0;
+  bool startWildcard = false;
+  bool endWildcard = false;
+
+  if (!parseTimeSpec(startSpec, startMinutes, startWildcard) ||
+      !parseTimeSpec(endSpec, endMinutes, endWildcard))
+  {
+    return false;
+  }
+
+  if (startWildcard && endWildcard)
+  {
+    return true;
+  }
+
+  if (startWildcard)
+  {
+    return currentMinutes <= endMinutes;
+  }
+
+  if (endWildcard)
+  {
+    return currentMinutes >= startMinutes;
+  }
+
+  if (startMinutes <= endMinutes)
+  {
+    return (currentMinutes >= startMinutes) && (currentMinutes <= endMinutes);
+  }
+
+  return (currentMinutes >= startMinutes) || (currentMinutes <= endMinutes);
+}
+
+int parseIsoDateToDayNumber(const String &value)
+{
+  int year;
+  int month;
+  int day;
+
+  if (sscanf(value.c_str(), "%d-%d-%d", &year, &month, &day) != 3)
+  {
+    return -1;
+  }
+
+  return year * 10000 + month * 100 + day;
+}
+
+bool matchesMonthDay(const struct tm &localtime, const String &value)
+{
+  int month;
+  int day;
+
+  if (sscanf(value.c_str(), "%d-%d", &month, &day) != 2)
+  {
+    return false;
+  }
+
+  return ((localtime.tm_mon + 1) == month) && (localtime.tm_mday == day);
+}
+
+bool matchesDayOfWeek(const struct tm &localtime, String value)
+{
+  static const char *DAY_NAMES[] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+
+  value.trim();
+  value.toUpperCase();
+  if (value.length() >= 3)
+  {
+    value = value.substring(0, 3);
+  }
+  return value == DAY_NAMES[localtime.tm_wday];
+}
+
+long calculateDayDeltaFromAnchor(const struct tm &localtime, int year, int month, int day)
+{
+  struct tm anchorTime = {};
+  struct tm currentTime = localtime;
+  time_t anchorEpoch;
+  time_t currentEpoch;
+
+  anchorTime.tm_year = year - 1900;
+  anchorTime.tm_mon = month - 1;
+  anchorTime.tm_mday = day;
+  anchorTime.tm_hour = 12;
+  anchorTime.tm_min = 0;
+  anchorTime.tm_sec = 0;
+  anchorTime.tm_isdst = -1;
+
+  currentTime.tm_hour = 12;
+  currentTime.tm_min = 0;
+  currentTime.tm_sec = 0;
+  currentTime.tm_isdst = -1;
+
+  anchorEpoch = mktime(&anchorTime);
+  currentEpoch = mktime(&currentTime);
+  if ((anchorEpoch == -1) || (currentEpoch == -1))
+  {
+    return -1;
+  }
+
+  return long((currentEpoch - anchorEpoch) / 86400);
+}
+
+bool matchesDailyRule(const struct tm &localtime, String ruleValue)
+{
+  int intervalDays;
+  long dayDelta;
+
+  ruleValue.trim();
+  if (ruleValue == "")
+  {
+    return true;
+  }
+  intervalDays = ruleValue.toInt();
+  if (intervalDays <= 0)
+  {
+    return false;
+  }
+
+  dayDelta = calculateDayDeltaFromAnchor(localtime, 1970, 1, 1);
+  if (dayDelta < 0)
+  {
+    return false;
+  }
+
+  return ((dayDelta % intervalDays) == 0);
+}
+
+bool matchesModRule(const struct tm &localtime, String ruleValue)
+{
+  int firstSeparator = ruleValue.indexOf(':');
+  int intervalDays;
+  int anchorDayNumber;
+  long dayDelta;
+
+  if (firstSeparator == -1)
+  {
+    intervalDays = ruleValue.toInt();
+    if (intervalDays <= 0)
+    {
+      return false;
+    }
+
+    dayDelta = calculateDayDeltaFromAnchor(localtime, 1970, 1, 1);
+    if (dayDelta < 0)
+    {
+      return false;
+    }
+
+    return ((dayDelta % intervalDays) == 0);
+  }
+
+  intervalDays = ruleValue.substring(0, firstSeparator).toInt();
+  if (intervalDays <= 0)
+  {
+    return false;
+  }
+
+  anchorDayNumber = parseIsoDateToDayNumber(ruleValue.substring(firstSeparator + 1));
+  if (anchorDayNumber == -1)
+  {
+    return false;
+  }
+
+  dayDelta = calculateDayDeltaFromAnchor(
+    localtime,
+    anchorDayNumber / 10000,
+    (anchorDayNumber / 100) % 100,
+    anchorDayNumber % 100
+  );
+  if (dayDelta < 0)
+  {
+    return false;
+  }
+
+  return ((dayDelta % intervalDays) == 0);
+}
+
+bool doesScheduleEntryMatchDate(const struct tm &localtime, String ruleSpec)
+{
+  int separatorIndex = ruleSpec.indexOf(':');
+  String ruleName = ruleSpec;
+  String ruleValue = "";
+  int currentDayNumber;
+
+  if (separatorIndex != -1)
+  {
+    ruleName = ruleSpec.substring(0, separatorIndex);
+    ruleValue = ruleSpec.substring(separatorIndex + 1);
+  }
+
+  ruleName.trim();
+  ruleName.toLowerCase();
+  ruleValue.trim();
+
+  if (ruleName == "daily")
+  {
+    return matchesDailyRule(localtime, ruleValue);
+  }
+
+  if (ruleName == "dow")
+  {
+    return matchesDayOfWeek(localtime, ruleValue);
+  }
+
+  if (ruleName == "date")
+  {
+    currentDayNumber = (localtime.tm_year + 1900) * 10000 + (localtime.tm_mon + 1) * 100 + localtime.tm_mday;
+    if (parseIsoDateToDayNumber(ruleValue) != -1)
+    {
+      return currentDayNumber == parseIsoDateToDayNumber(ruleValue);
+    }
+
+    return matchesMonthDay(localtime, ruleValue);
+  }
+
+  if (ruleName == "mod")
+  {
+    return matchesModRule(localtime, ruleValue);
+  }
+
+  return false;
+}
+
+bool shouldShowScheduleEntry(const String &entry, const struct tm &localtime)
+{
+  int firstSeparator = entry.indexOf('|');
+  int secondSeparator;
+  int thirdSeparator;
+  String ruleSpec;
+  String startSpec;
+  String endSpec;
+
+  if (firstSeparator == -1)
+  {
+    return false;
+  }
+
+  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  if (secondSeparator == -1)
+  {
+    return false;
+  }
+
+  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  if (thirdSeparator == -1)
+  {
+    return false;
+  }
+
+  ruleSpec = entry.substring(0, firstSeparator);
+  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+
+  ruleSpec.trim();
+  startSpec.trim();
+  endSpec.trim();
+
+  return doesScheduleEntryMatchDate(localtime, ruleSpec) &&
+         isCurrentTimeInRange(localtime, startSpec, endSpec);
+}
+
+void clearScheduleEntries()
+{
+  for (int index = 0; index < MAX_SCHEDULE_ENTRIES; ++index)
+  {
+    ScheduleEntries[index] = "";
+  }
+}
+
+void printScheduleEntriesToSerial(const struct tm *localtime = nullptr)
+{
+  int printedCount = 0;
+
+  Serial.println("Loaded alarms:");
+  for (int index = 0; index < MAX_SCHEDULE_ENTRIES; ++index)
+  {
+    if (ScheduleEntries[index] == "")
+    {
+      continue;
+    }
+
+    Serial.print("  schedule");
+    Serial.print(index);
+    Serial.print("=");
+    Serial.print(buildScheduleDisplayText(ScheduleEntries[index]));
+    if (localtime != nullptr)
+    {
+      Serial.print(" -> ");
+      Serial.println(shouldShowScheduleEntry(ScheduleEntries[index], *localtime) ? "SHOW" : "hide");
+    }
+    else
+    {
+      Serial.println();
+    }
+    ++printedCount;
+  }
+
+  if (printedCount == 0)
+  {
+    Serial.println("  <none>");
+  }
+}
+
+void renderActiveScheduleEntries(const struct tm &localtime)
+{
+  const int boxX = 6;
+  const int boxY = 144;
+  const int boxW = 308;
+  const int lineHeight = 32;
+  const int boxH = 240 - boxY;
+  int visibleIndices[MAX_SCHEDULE_ENTRIES];
+  int visibleCount = collectSortedVisibleScheduleIndices(localtime, visibleIndices, MAX_SCHEDULE_ENTRIES);
+  int drawnCount = 0;
+
+  tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
+  tft.setTextColor(createColor(255, 220, 160), TFT_BLACK);
+  tft.setTextFont(2);
+  tft.setTextSize(2);
+
+  for (int visibleIndex = 0; visibleIndex < visibleCount; ++visibleIndex)
+  {
+    String displayText;
+    int index = visibleIndices[visibleIndex];
+
+    displayText = extractScheduleTitle(ScheduleEntries[index]);
+    tft.drawString(displayText, boxX, boxY + (drawnCount * lineHeight), 2);
+    ++drawnCount;
+
+    if (drawnCount >= MAX_VISIBLE_SCHEDULE_ENTRIES)
+    {
+      break;
+    }
+  }
+
+  tft.setTextSize(1);
 }
 
 void parseTranslationList(String value, String destination[], int destinationSize)
@@ -390,11 +1103,14 @@ void parseConfigLine(String line)
   String key = line.substring(0, separatorIndex);
   key = sanitizeConfigKey(key);
   String value = line.substring(separatorIndex + 1);
+  int scheduleIndex = parseScheduleIndex(key);
   value.replace("\r", "");
   value.replace("\n", "");
   // Serial.print(key + F("="));
   // Serial.println(value);
-  if (configKeyEquals(key, "ssid")) {
+  if (scheduleIndex != -1) {
+    ScheduleEntries[scheduleIndex] = value;
+  } else if (configKeyEquals(key, "ssid")) {
     ssid = value;
   } else if (configKeyEquals(key, "password")) {
     password = value;
@@ -520,6 +1236,61 @@ read_config_text_from_sd_exit:
   return success;
 }
 
+bool read_system_id_from_sd()
+{
+  File systemIdFile;
+  String rawSystemId = "";
+  bool success = false;
+
+  if (!begin_sd_session())
+  {
+    goto read_system_id_from_sd_exit;
+  }
+
+  systemIdFile = SD.open("/systemid.txt");
+  if (!systemIdFile)
+  {
+    system_id = "";
+    goto read_system_id_from_sd_exit;
+  }
+
+  while (systemIdFile.available())
+  {
+    rawSystemId += char(systemIdFile.read());
+  }
+
+  systemIdFile.close();
+  rawSystemId.trim();
+  system_id = sanitizeSystemId(rawSystemId);
+  success = true;
+
+read_system_id_from_sd_exit:
+  end_sd_session();
+  return success;
+}
+
+String build_update_request_url()
+{
+  String requestUrl = updateurl;
+
+  if (system_id == "")
+  {
+    return requestUrl;
+  }
+
+  if (requestUrl.indexOf('?') == -1)
+  {
+    requestUrl += "/?systemid=";
+  }
+  else
+  {
+    requestUrl += "/&systemid=";
+  }
+
+  requestUrl += system_id;
+  return requestUrl;
+}
+
 bool sync_config_to_sd_and_memory(String newContent, bool &changed)
 {
   String verifiedContent;
@@ -557,6 +1328,19 @@ bool sync_config_to_sd_and_memory(String newContent, bool &changed)
   return true;
 }
 
+void reportScheduleEntriesForCurrentTime()
+{
+  struct tm localtime;
+
+  if (!getLocalTime(&localtime, 1000))
+  {
+    Serial.println("Loaded alarms: unable to evaluate current time");
+    return;
+  }
+
+  printScheduleEntriesToSerial(&localtime);
+}
+
 // read config.txt from SD Card
 void read_sd()
 {
@@ -574,11 +1358,34 @@ void read_sd()
   Serial.println("read_sd: End");
 }
 
+void read_system_id()
+{
+  Serial.println("read_system_id: Begin");
+  if (read_system_id_from_sd())
+  {
+    if (system_id != "")
+    {
+      Serial.print("System ID: ");
+      Serial.println(system_id);
+    }
+    else
+    {
+      Serial.println("System ID file empty after sanitization");
+    }
+  }
+  else
+  {
+    Serial.println("System ID not found");
+  }
+  Serial.println("read_system_id: End");
+}
+
 bool bootstrap_config_from_server()
 {
   HTTPClient http;
   String payload;
   int httpCode;
+  String requestUrl;
 
   Serial.println("Bootstrap config check");
   tft.println("Bootstrap config check");
@@ -603,7 +1410,8 @@ bool bootstrap_config_from_server()
     return false;
   }
 
-  http.begin(updateurl);
+  requestUrl = build_update_request_url();
+  http.begin(requestUrl);
   http.setTimeout(5000);
   httpCode = http.GET();
 
@@ -716,6 +1524,7 @@ void setup()
   tft.println("Calendar Start");
 
   read_sd();
+  read_system_id();
 
   // Backlight after config read
   pinMode(backlightPin, OUTPUT);
@@ -772,6 +1581,8 @@ void apply_config_from_string(String content)
   int end = 0;
   String line;
 
+  clearScheduleEntries();
+
   while (start < content.length())
   {
     end = content.indexOf('\n', start);
@@ -816,6 +1627,7 @@ bool poll_update_server()
   HTTPClient http;
   String payload;
   int httpCode;
+  String requestUrl;
 
   String old_ssid = ssid;
   String old_password = password;
@@ -851,9 +1663,10 @@ bool poll_update_server()
   }
 
   Serial.print("Update check: ");
-  Serial.println(updateurl);
+  requestUrl = build_update_request_url();
+  Serial.println(requestUrl);
   
-  http.begin(updateurl);
+  http.begin(requestUrl);
   http.setTimeout(1000);
   httpCode = http.GET();
 
@@ -891,10 +1704,12 @@ bool poll_update_server()
 
   if (!changed)
   {
+    reportScheduleEntriesForCurrentTime();
     return true;
   }
 
   apply_config_from_string(current_config_text);
+  reportScheduleEntriesForCurrentTime();
 
   if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
   {
@@ -975,7 +1790,8 @@ void loop()
     
     // draw Date      
     tft.setTextColor(TFT_WHITE, createColor(0, 0, 90));
-    tft.drawString(dateString, 38, 0, 4);      
+    tft.drawString(dateString, 38, 0, 4);
+    renderActiveScheduleEntries(localtime);
     
   }
 
@@ -986,6 +1802,7 @@ void loop()
     Serial.println("event_tm_min");
     // UTC Time HH:MM
     sprintf(utctimeString, "%02d:%02d", utctime->tm_hour, utctime->tm_min);
+    renderActiveScheduleEntries(localtime);
   }
 
   // EVENT every sec
@@ -1041,7 +1858,7 @@ void loop()
       sprite.drawString(locaxtimeString, sprite.width() / 2, sprite.height() / 2);
     }
 
-    sprite.pushSprite(1, 78);
+    sprite.pushSprite(1, 68);
     sprite.deleteSprite();
     //SoftTimer(500);
       

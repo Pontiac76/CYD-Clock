@@ -20,97 +20,12 @@ This file is the project-facing working list for planned changes that are not ye
 - Build toward a reusable, templatable UI rather than a fixed one-off display.
 - Keep room in the design for future richer event views, onboarding flows, and sensor-driven behavior without requiring major rewrites.
 
-## Scheduled Text System
+## Scheduled Text Follow-Up
 
-Goal:
-The clock should be able to receive flat `textentryN` rules from the server and display the correct scheduled text based on local date and time, reliably and with minimal firmware-side complexity.
-
-### Design Direction
-
-- The Python server owns the human-friendly authoring format.
-- The ESP32 consumes only flat `key=value` config.
-- Scheduled entries are emitted as numbered keys such as `textentry0`, `textentry1`, and so on.
-- The server may also emit `clockname=<friendly text>` so the device can show its friendly name on screen.
-- If the SD card contains `clockname.txt`, the ESP32 should read it and use that value to identify the clock and display its friendly name somewhere on screen.
-- If `clockname.txt` does not exist, the clock should behave as an unnamed/default device and only consume schedule entries intended for all clocks.
-- The ESP32 should evaluate schedule matching on minute boundaries, not every second.
-- Dynamic schedule state must be cleared before applying fresh downloaded config so removed rules do not linger in memory.
-- If multiple entries are active at the same time, the CYD should be able to show more than one entry at once, up to the available number of display lines.
-- If more entries are active than can fit on screen, the CYD should rotate through the active set over time instead of dropping down to a single winner.
-- Active entries should be ordered oldest to newest using case-insensitive sorting for display rotation.
-- The CYD should determine the active set and display order locally, since recurring and one-time dates need to be interpreted against the current local date.
-- Rotation should be based on the sorted active set and should allow different combinations of visible entries across successive minute updates when there are more active entries than display slots.
-
-### Flat Rule Format
-
-`textentryN=enabled|dayspec|start|end|text`
-
-Examples:
-
-- `textentry0=1|daily|20:00|00:00|Feed Dogs`
-- `textentry1=1|dow:FRI|18:00|23:00|Weekend mode`
-- `textentry2=1|date:2026-04-03|00:00|23:59|Doctor Appointment`
-- `textentry3=1|date:04-03|00:00|23:59|Birthday Reminder`
-- `textentry4=1|mod:30|*|*|Charge EBike`
-- `textentry5=1|mod:30:2026-01-01|*|*|Filter Reminder`
-
-Supported first-pass `dayspec` values:
-
-- `daily`
-- `dow:MON` through `dow:SUN`
-- `date:YYYY-MM-DD`
-- `date:MM-DD`
-- `mod:N`
-- `mod:N:YYYY-MM-DD`
-
-Modular day notes:
-
-- `mod:N` uses modular day-count math.
-- `mod:N` without an explicit anchor date uses the fixed epoch `2000-01-01`.
-- `mod:N:YYYY-MM-DD` is also valid and overrides the default modular anchor date.
-
-Time-window rules:
-
-- If `start <= end`, treat it as a same-day window.
-- If `start > end`, treat it as an overnight window across midnight.
-- If `start=*` and `end=*`, treat it as all day.
-- Mixed wildcard forms are not required for first pass.
-
-### Firmware Tasks
-
-- Add a bounded schedule entry struct and storage array in the ESP32 firmware.
-- Add config parsing for `textentryN` and `clockname`.
 - Add startup/runtime config layering so LittleFS is read first and SD overrides are applied second.
-- Clear/reset dynamic schedule entries before applying a fresh downloaded config payload.
-- Parse each `textentryN` by splitting on `|`.
-- Implement day matching for `daily`.
-- Implement day matching for `dow:MON` style weekly rules.
-- Implement day matching for `date:MM-DD` recurring yearly dates.
-- Implement day matching for `date:YYYY-MM-DD` one-time dates.
-- Implement day matching for `mod:N` recurring day-count rules from the fixed epoch `2000-01-01`.
-- Implement day matching for `mod:N:YYYY-MM-DD` recurring day-count rules using a custom anchor date.
-- Implement time-window matching, including overnight windows and `*|*`.
-- Evaluate scheduled text on minute changes, not second changes.
-- Build the active entry list on minute changes.
-- Determine how many lines of scheduled text can be shown at once in the current UI.
-- Sort or otherwise order active entries oldest to newest in a stable, case-insensitive way suitable for display rotation.
-- Show as many active entries at once as the available display lines allow.
 - Rotate through active-entry combinations over time when more entries are active than can fit on screen.
 - Cache the currently shown message and redraw only when the visible entry changes, if practical.
-- Keep message drawing independent from the time sprite so clock redraws do not wipe scheduled text.
-- Add basic serial debug output for schedule parsing and matching only if it helps with bring-up.
 - Add a future full-screen view for active and upcoming events, likely with auto-scrolling.
-
-### Suggested Helper Functions
-
-- `parseTextEntry(...)`
-- `parseTimeToMinutes(...)`
-- `matchesDaySpec(...)`
-- `matchesTimeWindow(...)`
-- `daysSinceEpoch2000(...)`
-- `getActiveScheduledEntries(...)`
-- `sortActiveScheduledEntries(...)`
-- `getDisplayedScheduledMessage(...)`
 
 ## Connectivity And Recovery
 
@@ -155,23 +70,18 @@ Time-window rules:
 
 ### Server Tasks
 
-- Support human-edited schedule sections such as `[Schedules]`, `[Schedules:Bedroom]`, and `[Schedules:Desk]`.
-- Treat `[Schedules]` as the shared/default section that applies to all clocks.
-- If a named clock identity is available, merge `[Schedules]` with the matching per-clock section before emitting flattened `textentryN` keys.
-- If no named clock identity is available, emit only entries from `[Schedules]`.
-- Remove perfect duplicate schedule entries after section merging so the same event is not emitted twice.
-- Normalize friendly input formats and aliases before serving output.
-- Use clock identity to select device-specific schedule blocks.
-- Emit `clockname=<friendly text>` for display when appropriate.
-- Keep future iCal import support compiling down into the same flat `textentryN` format.
+- Support human-edited schedule sections such as `[Schedule]`, `[Schedule:Bedroom]`, and `[Schedule:Desk]`.
+- Treat `[Schedule]` as the shared/default section that applies to all clocks.
+- If a named clock identity is available, merge `[Schedule]` with the matching per-clock section before emitting flattened `scheduleN` keys.
+- Keep future iCal import support compiling down into the same flat `scheduleN` format.
 - Generate display-ready image assets from SVG sources and state-based color mappings.
 
 ### Clock Identity
 
-- Use a small local file such as `/clockname.txt` rather than MAC address to identify the clock.
-- Display the clock name on screen when `clockname.txt` is present.
+- Use a small local file such as `/systemid.txt` rather than MAC address to identify the clock.
+- Display the clock name or friendly identity on screen when appropriate in a later pass.
 - Use that identity on the server side to choose which schedule block applies.
-- If `clockname.txt` is missing, treat the device as unnamed and only apply the shared `[Schedules]` entries.
+- If `systemid.txt` is missing, treat the device as unnamed and only apply the shared `[Schedule]` entries.
 
 ### Non-Goals For First Pass
 

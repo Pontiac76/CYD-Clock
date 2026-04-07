@@ -2,7 +2,10 @@
 /.vscode
 /__pycache__
 /lib
-/SD_Card/config.txt
-/SD_Card/config.rendered
 /data/config.txt
 /test
+/data/config.txt
+/data/config.rendered*
+/node_modules
+/package.json
+/package-lock.json

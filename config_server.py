@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from datetime import datetime
 import re
+from urllib.parse import parse_qs, urlparse
 
 from gen_tzinfo import build_posix_tz_from_zdump
 
@@ -25,6 +26,19 @@ def sanitize_timezone_input(value: str) -> str:
     value = re.sub(r"/+", "/", value)
     value = re.sub(r"[^A-Za-z0-9_+\-/]", "", value)
     return value.strip("/")
+
+
+def sanitize_system_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", value.strip())
+
+
+def normalize_section_name(value: str) -> str:
+    name = value.strip().lower()
+    if name == "schedule":
+        return "scheduled"
+    if name.startswith("schedule:"):
+        return "scheduled:" + name.split(":", 1)[1]
+    return name
 
 
 def iter_zone_names():
@@ -83,14 +97,32 @@ def parse_config_lines(lines: list[str]):
     parsed = []
     timezone_value = None
     tzinfo_value = None
+    scheduled_common: list[str] = []
+    scheduled_per_system: dict[str, list[str]] = {}
+    current_section = ""
 
     for raw_line in lines:
         clean = raw_line.rstrip("\r\n")
+        stripped = clean.strip()
 
-        if clean.strip() == "":
+        if stripped == "":
             continue
 
-        if clean.lstrip().startswith("#"):
+        if stripped.startswith("#"):
+            continue
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = normalize_section_name(stripped[1:-1])
+            continue
+
+        if current_section == "scheduled":
+            scheduled_common.append(stripped)
+            continue
+
+        if current_section.startswith("scheduled:"):
+            system_id = sanitize_system_id(current_section.split(":", 1)[1])
+            if system_id != "":
+                scheduled_per_system.setdefault(system_id.lower(), []).append(stripped)
             continue
 
         if "=" not in clean:
@@ -107,12 +139,39 @@ def parse_config_lines(lines: list[str]):
         elif key == "tzinfo":
             tzinfo_value = value
 
-    return parsed, timezone_value, tzinfo_value
+    return parsed, timezone_value, tzinfo_value, scheduled_common, scheduled_per_system
 
 
-def rebuild_config_text() -> bytes:
+def merge_scheduled_entries(common_lines: list[str], system_lines: list[str]) -> list[str]:
+    merged = []
+    seen = set()
+
+    for line in common_lines + system_lines:
+        key = line.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(line)
+
+    return merged
+
+
+def render_scheduled_entries(lines: list[str], start_index: int = 0) -> list[str]:
+    rendered = []
+
+    for offset, line in enumerate(lines):
+        rendered.append(f"schedule{start_index + offset}={line}")
+
+    return rendered
+
+
+def build_rendered_path(system_id: str) -> Path:
+    return SOURCE_FILE.parent / f"config.rendered.{system_id}"
+
+
+def rebuild_config_text(system_id: str | None = None) -> bytes:
     lines = load_source_lines()
-    parsed, timezone_value, tzinfo_value = parse_config_lines(lines)
+    parsed, timezone_value, tzinfo_value, scheduled_common, scheduled_per_system = parse_config_lines(lines)
 
     resolved_zone = None
     generated_tzinfo = None
@@ -170,23 +229,41 @@ def rebuild_config_text() -> bytes:
     if generated_tzinfo is not None and not tzinfo_written:
         output_lines.append(f"tzinfo={generated_tzinfo}")
 
+    sanitized_system_id = sanitize_system_id(system_id or "")
+    selected_schedule_lines = merge_scheduled_entries(
+        scheduled_common,
+        scheduled_per_system.get(sanitized_system_id.lower(), []) if sanitized_system_id != "" else [],
+    )
+    if selected_schedule_lines:
+        output_lines.extend(render_scheduled_entries(selected_schedule_lines))
+
     text = "\n".join(output_lines)
     if not text.endswith("\n"):
         text += "\n"
 
-    return text.encode("utf-8")
+    payload = text.encode("utf-8")
+
+    if sanitized_system_id != "":
+        rendered_path = build_rendered_path(sanitized_system_id)
+        rendered_path.write_bytes(payload)
+
+    return payload
 
 
 class ConfigHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
-            payload = rebuild_config_text()
+            query = parse_qs(urlparse(self.path).query)
+            system_id = sanitize_system_id(query.get("systemid", [""])[0])
+            payload = rebuild_config_text(system_id or None)
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
             self.wfile.write(payload)
+            if system_id != "":
+                log(f'served rendered config for systemid="{system_id}"')
         except Exception as exc:
             msg = f"#CFG ERROR\n{str(exc)}\n".encode("utf-8", errors="replace")
             self.send_response(500)
