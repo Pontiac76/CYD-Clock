@@ -1034,7 +1034,7 @@ void renderActiveScheduleEntries(const struct tm &localtime)
 {
   const int boxX = 6;
   const int boxY = 144;
-  const int boxW = 308;
+  const int boxW = 320 - boxX;
   const int lineHeight = 32;
   const int boxH = 240 - boxY;
   int visibleIndices[MAX_SCHEDULE_ENTRIES];
