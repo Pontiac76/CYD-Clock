@@ -41,6 +41,22 @@ def normalize_section_name(value: str) -> str:
     return name
 
 
+def parse_scheduled_system_ids(section_name: str) -> list[str]:
+    if not section_name.startswith("scheduled:"):
+        return []
+
+    system_ids: list[str] = []
+    raw_targets = section_name.split(":", 1)[1]
+
+    for raw_target in raw_targets.split(","):
+        system_id = sanitize_system_id(raw_target)
+        if system_id == "":
+            continue
+        system_ids.append(system_id.lower())
+
+    return system_ids
+
+
 def iter_zone_names():
     for path in ZONEINFO_ROOT.rglob("*"):
         if not path.is_file():
@@ -120,9 +136,8 @@ def parse_config_lines(lines: list[str]):
             continue
 
         if current_section.startswith("scheduled:"):
-            system_id = sanitize_system_id(current_section.split(":", 1)[1])
-            if system_id != "":
-                scheduled_per_system.setdefault(system_id.lower(), []).append(stripped)
+            for system_id in parse_scheduled_system_ids(current_section):
+                scheduled_per_system.setdefault(system_id, []).append(stripped)
             continue
 
         if "=" not in clean:
