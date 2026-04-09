@@ -2,6 +2,66 @@
 
 #include "app_state.h"
 
+bool parsePriorityPrefix(const String &entry, int &groupPriority, int &eventPriority, String &coreEntry)
+{
+  int firstSeparator = entry.indexOf('~');
+  int secondSeparator;
+  String firstPart;
+  String secondPart;
+  String thirdPart;
+
+  groupPriority = 1;
+  eventPriority = 1;
+  coreEntry = entry;
+
+  if (firstSeparator == -1)
+  {
+    return true;
+  }
+
+  firstPart = entry.substring(0, firstSeparator);
+  secondSeparator = entry.indexOf('~', firstSeparator + 1);
+
+  // Legacy single-prefix support: "N~rule|..."
+  if (secondSeparator == -1)
+  {
+    firstPart.trim();
+    if ((firstPart.length() == 1) && isDigit(firstPart.charAt(0)))
+    {
+      groupPriority = 1;
+      eventPriority = firstPart.toInt();
+      coreEntry = entry.substring(firstSeparator + 1);
+      coreEntry.trim();
+    }
+    return true;
+  }
+
+  secondPart = entry.substring(firstSeparator + 1, secondSeparator);
+  thirdPart = entry.substring(secondSeparator + 1);
+  firstPart.trim();
+  secondPart.trim();
+  thirdPart.trim();
+
+  if ((firstPart.length() == 1) && isDigit(firstPart.charAt(0)))
+  {
+    groupPriority = firstPart.toInt();
+  }
+
+  if ((secondPart.length() == 1) && isDigit(secondPart.charAt(0)))
+  {
+    eventPriority = secondPart.toInt();
+  }
+  else
+  {
+    // Two-prefix form is expected to carry explicit event priority.
+    // If malformed, treat it as lowest priority by default.
+    eventPriority = 9;
+  }
+
+  coreEntry = thirdPart;
+  return true;
+}
+
 bool parseTimeSpec(const String &value, int &minutesSinceMidnight, bool &wildcard)
 {
   int separatorIndex;
@@ -80,6 +140,9 @@ String formatMinutesForDisplay(int minutesSinceMidnight)
 
 String formatScheduleDisplayRange(const String &entry)
 {
+  int groupPriority;
+  int eventPriority;
+  String coreEntry;
   int firstSeparator = entry.indexOf('|');
   int secondSeparator;
   int thirdSeparator;
@@ -90,25 +153,27 @@ String formatScheduleDisplayRange(const String &entry)
   bool startWildcard = false;
   bool endWildcard = false;
 
+  parsePriorityPrefix(entry, groupPriority, eventPriority, coreEntry);
+  firstSeparator = coreEntry.indexOf('|');
   if (firstSeparator == -1)
   {
     return "";
   }
 
-  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  secondSeparator = coreEntry.indexOf('|', firstSeparator + 1);
   if (secondSeparator == -1)
   {
     return "";
   }
 
-  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  thirdSeparator = coreEntry.indexOf('|', secondSeparator + 1);
   if (thirdSeparator == -1)
   {
     return "";
   }
 
-  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
-  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+  startSpec = coreEntry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = coreEntry.substring(secondSeparator + 1, thirdSeparator);
   startSpec.trim();
   endSpec.trim();
 
@@ -138,28 +203,33 @@ String formatScheduleDisplayRange(const String &entry)
 
 String extractScheduleTitle(const String &entry)
 {
+  int groupPriority;
+  int eventPriority;
+  String coreEntry;
   int firstSeparator = entry.indexOf('|');
   int secondSeparator;
   int thirdSeparator;
 
+  parsePriorityPrefix(entry, groupPriority, eventPriority, coreEntry);
+  firstSeparator = coreEntry.indexOf('|');
   if (firstSeparator == -1)
   {
-    return entry;
+    return coreEntry;
   }
 
-  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  secondSeparator = coreEntry.indexOf('|', firstSeparator + 1);
   if (secondSeparator == -1)
   {
-    return entry;
+    return coreEntry;
   }
 
-  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  thirdSeparator = coreEntry.indexOf('|', secondSeparator + 1);
   if (thirdSeparator == -1)
   {
-    return entry;
+    return coreEntry;
   }
 
-  String title = entry.substring(thirdSeparator + 1);
+  String title = coreEntry.substring(thirdSeparator + 1);
   title.trim();
   return title;
 }
@@ -179,6 +249,9 @@ String buildScheduleDisplayText(const String &entry)
 
 bool parseScheduleTimeWindow(const String &entry, int &startMinutes, bool &startWildcard, int &endMinutes, bool &endWildcard)
 {
+  int groupPriority;
+  int eventPriority;
+  String coreEntry;
   int firstSeparator = entry.indexOf('|');
   int secondSeparator;
   int thirdSeparator;
@@ -190,25 +263,27 @@ bool parseScheduleTimeWindow(const String &entry, int &startMinutes, bool &start
   startWildcard = false;
   endWildcard = false;
 
+  parsePriorityPrefix(entry, groupPriority, eventPriority, coreEntry);
+  firstSeparator = coreEntry.indexOf('|');
   if (firstSeparator == -1)
   {
     return false;
   }
 
-  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  secondSeparator = coreEntry.indexOf('|', firstSeparator + 1);
   if (secondSeparator == -1)
   {
     return false;
   }
 
-  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  thirdSeparator = coreEntry.indexOf('|', secondSeparator + 1);
   if (thirdSeparator == -1)
   {
     return false;
   }
 
-  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
-  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+  startSpec = coreEntry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = coreEntry.substring(secondSeparator + 1, thirdSeparator);
   startSpec.trim();
   endSpec.trim();
 
@@ -243,6 +318,12 @@ int getScheduleSortRank(const String &entry)
 
 bool shouldScheduleEntrySortBefore(const String &leftEntry, const String &rightEntry)
 {
+  int leftGroupPriority = 1;
+  int leftEventPriority = 1;
+  int rightGroupPriority = 1;
+  int rightEventPriority = 1;
+  String leftCoreEntry;
+  String rightCoreEntry;
   int leftRank = getScheduleSortRank(leftEntry);
   int rightRank = getScheduleSortRank(rightEntry);
   int leftStartMinutes = 0;
@@ -255,6 +336,19 @@ bool shouldScheduleEntrySortBefore(const String &leftEntry, const String &rightE
   bool rightEndWildcard = false;
   String leftTitle;
   String rightTitle;
+
+  parsePriorityPrefix(leftEntry, leftGroupPriority, leftEventPriority, leftCoreEntry);
+  parsePriorityPrefix(rightEntry, rightGroupPriority, rightEventPriority, rightCoreEntry);
+
+  if (leftGroupPriority != rightGroupPriority)
+  {
+    return leftGroupPriority < rightGroupPriority;
+  }
+
+  if (leftEventPriority != rightEventPriority)
+  {
+    return leftEventPriority < rightEventPriority;
+  }
 
   if (leftRank != rightRank)
   {
@@ -625,6 +719,9 @@ int parseScheduleIndex(const String &normalizedKey)
 
 bool shouldShowScheduleEntry(const String &entry, const struct tm &localtime)
 {
+  int groupPriority;
+  int eventPriority;
+  String coreEntry;
   int firstSeparator = entry.indexOf('|');
   int secondSeparator;
   int thirdSeparator;
@@ -633,26 +730,28 @@ bool shouldShowScheduleEntry(const String &entry, const struct tm &localtime)
   String endSpec;
   struct tm evaluationTime;
 
+  parsePriorityPrefix(entry, groupPriority, eventPriority, coreEntry);
+  firstSeparator = coreEntry.indexOf('|');
   if (firstSeparator == -1)
   {
     return false;
   }
 
-  secondSeparator = entry.indexOf('|', firstSeparator + 1);
+  secondSeparator = coreEntry.indexOf('|', firstSeparator + 1);
   if (secondSeparator == -1)
   {
     return false;
   }
 
-  thirdSeparator = entry.indexOf('|', secondSeparator + 1);
+  thirdSeparator = coreEntry.indexOf('|', secondSeparator + 1);
   if (thirdSeparator == -1)
   {
     return false;
   }
 
-  ruleSpec = entry.substring(0, firstSeparator);
-  startSpec = entry.substring(firstSeparator + 1, secondSeparator);
-  endSpec = entry.substring(secondSeparator + 1, thirdSeparator);
+  ruleSpec = coreEntry.substring(0, firstSeparator);
+  startSpec = coreEntry.substring(firstSeparator + 1, secondSeparator);
+  endSpec = coreEntry.substring(secondSeparator + 1, thirdSeparator);
 
   ruleSpec.trim();
   startSpec.trim();

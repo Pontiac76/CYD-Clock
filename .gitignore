@@ -4,8 +4,7 @@
 /lib
 /data/config.txt
 /test
-/data/config.txt
-/data/config.rendered*
 /node_modules
 /package.json
 /package-lock.json
+/temp

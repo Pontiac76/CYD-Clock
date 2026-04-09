@@ -14,6 +14,7 @@
 #include "app_state.h"
 #include "schedule_display.h"
 #include <HTTPClient.h>
+#include <LittleFS.h>
 
 //Touch Pins
 #define XPT2046_IRQ 36
@@ -29,6 +30,18 @@
 //Backlight Pin
 #define backlightPin 21
 int brightness = 128; // Brightness (0-255)
+int mindim = 32;
+int maxdim = 128;
+int hourspan = 1;
+String sunrise_time = "06:00";
+String sunset_time = "18:00";
+unsigned long next_auto_dim_ms = 0;
+unsigned long auto_dim_resume_ms = 0;
+int autodim_hold_ms = 2000;
+int autodim_step_ms = 1000;
+int autodim_percent = 10;
+bool autodim_debug = false;
+unsigned long next_autodim_debug_ms = 0;
 
 // RGB conversion
 #define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
@@ -81,8 +94,208 @@ int event_tm_min = -1;
 int event_tm_sec = -1;
 
 int next_update_modular = 15;
+String build_version_code;
 
 void apply_config_from_string(String content);
+
+int parseClockToMinutes(const String &value)
+{
+  int hour = 0;
+  int minute = 0;
+  String cleaned = value;
+  cleaned.trim();
+  if (sscanf(cleaned.c_str(), "%d:%d", &hour, &minute) != 2)
+  {
+    return -1;
+  }
+  if ((hour < 0) || (hour > 23) || (minute < 0) || (minute > 59))
+  {
+    return -1;
+  }
+  return (hour * 60) + minute;
+}
+
+int clampBrightness(int value)
+{
+  return min(255, max(1, value));
+}
+
+void applyBrightnessValue(int value)
+{
+  brightness = clampBrightness(value);
+  analogWrite(backlightPin, brightness);
+}
+
+int computeAutoTargetBrightness(const struct tm &localtime)
+{
+  int sunriseMinutes = parseClockToMinutes(sunrise_time);
+  int sunsetMinutes = parseClockToMinutes(sunset_time);
+  int currentMinutes = (localtime.tm_hour * 60) + localtime.tm_min;
+  int safeMin = clampBrightness(min(mindim, maxdim));
+  int safeMax = clampBrightness(max(mindim, maxdim));
+  int transitionMinutes = max(2, hourspan * 60);
+  int halfWindow = transitionMinutes / 2;
+
+  if ((sunriseMinutes == -1) || (sunsetMinutes == -1) || (sunriseMinutes >= sunsetMinutes))
+  {
+    return safeMax;
+  }
+
+  int sunriseStart = sunriseMinutes - halfWindow;
+  int sunriseEnd = sunriseMinutes + halfWindow;
+  int sunsetStart = sunsetMinutes - halfWindow;
+  int sunsetEnd = sunsetMinutes + halfWindow;
+
+  if (currentMinutes < sunriseStart)
+  {
+    return safeMin;
+  }
+  if (currentMinutes < sunriseEnd)
+  {
+    int numerator = (currentMinutes - sunriseStart) * (safeMax - safeMin);
+    int denominator = max(1, sunriseEnd - sunriseStart);
+    return safeMin + (numerator / denominator);
+  }
+  if (currentMinutes < sunsetStart)
+  {
+    return safeMax;
+  }
+  if (currentMinutes < sunsetEnd)
+  {
+    int numerator = (currentMinutes - sunsetStart) * (safeMax - safeMin);
+    int denominator = max(1, sunsetEnd - sunsetStart);
+    return safeMax - (numerator / denominator);
+  }
+
+  return safeMin;
+}
+
+void processAutoBrightness(const struct tm &localtime)
+{
+  unsigned long nowMs = millis();
+  if (nowMs < auto_dim_resume_ms)
+  {
+    if (autodim_debug && (nowMs >= next_autodim_debug_ms))
+    {
+      int target = computeAutoTargetBrightness(localtime);
+      Serial.print("AutoDim HOLD current=");
+      Serial.print(brightness);
+      Serial.print(" target=");
+      Serial.print(target);
+      Serial.print(" resume_in_ms=");
+      Serial.println(auto_dim_resume_ms - nowMs);
+      next_autodim_debug_ms = nowMs + 5000;
+    }
+    return;
+  }
+  if (nowMs < next_auto_dim_ms)
+  {
+    return;
+  }
+
+  int target = computeAutoTargetBrightness(localtime);
+  int nextValue = brightness;
+  int gap = abs(target - brightness);
+  int step = max(1, (gap * autodim_percent) / 100);
+  if (brightness < target)
+  {
+    nextValue = brightness + step;
+    if (nextValue > target)
+    {
+      nextValue = target;
+    }
+  }
+  else if (brightness > target)
+  {
+    nextValue = brightness - step;
+    if (nextValue < target)
+    {
+      nextValue = target;
+    }
+  }
+
+  if (nextValue != brightness)
+  {
+    applyBrightnessValue(nextValue);
+    if (autodim_debug)
+    {
+      Serial.print("AutoDim STEP current=");
+      Serial.print(brightness);
+      Serial.print(" target=");
+      Serial.println(target);
+    }
+  }
+  else if (autodim_debug && (nowMs >= next_autodim_debug_ms))
+  {
+    Serial.print("AutoDim IDLE current=");
+    Serial.print(brightness);
+    Serial.print(" target=");
+    Serial.println(target);
+    next_autodim_debug_ms = nowMs + 5000;
+  }
+
+  next_auto_dim_ms = nowMs + max(10, autodim_step_ms);
+}
+
+int monthFromDateAbbrev(const char *abbrev)
+{
+  if (strncmp(abbrev, "Jan", 3) == 0) return 1;
+  if (strncmp(abbrev, "Feb", 3) == 0) return 2;
+  if (strncmp(abbrev, "Mar", 3) == 0) return 3;
+  if (strncmp(abbrev, "Apr", 3) == 0) return 4;
+  if (strncmp(abbrev, "May", 3) == 0) return 5;
+  if (strncmp(abbrev, "Jun", 3) == 0) return 6;
+  if (strncmp(abbrev, "Jul", 3) == 0) return 7;
+  if (strncmp(abbrev, "Aug", 3) == 0) return 8;
+  if (strncmp(abbrev, "Sep", 3) == 0) return 9;
+  if (strncmp(abbrev, "Oct", 3) == 0) return 10;
+  if (strncmp(abbrev, "Nov", 3) == 0) return 11;
+  if (strncmp(abbrev, "Dec", 3) == 0) return 12;
+  return 0;
+}
+
+String getBuildVersionCode()
+{
+  char dateMonth[4];
+  int day = 0;
+  int year = 0;
+  int hour = 0;
+  int minute = 0;
+  char buffer[11];
+
+  if (sscanf(__DATE__, "%3s %d %d", dateMonth, &day, &year) != 3)
+  {
+    return "0000000000";
+  }
+
+  if (sscanf(__TIME__, "%d:%d", &hour, &minute) != 2)
+  {
+    return "0000000000";
+  }
+
+  int month = monthFromDateAbbrev(dateMonth);
+  if (month == 0)
+  {
+    return "0000000000";
+  }
+
+  snprintf(buffer, sizeof(buffer), "%02d%02d%02d%02d%02d",
+           year % 100, month, day, hour, minute);
+  return String(buffer);
+}
+
+void drawBuildAndSystemInfo()
+{
+  String idText = (system_id == "") ? "no-id" : system_id;
+
+  tft.setTextFont(1);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE, createColor(0, 0, 90));
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(idText, 318, 2, 1);
+  tft.drawString(build_version_code, 318, 14, 1);
+  tft.setTextDatum(TL_DATUM);
+}
 
 void initialize_touch()
 {
@@ -430,6 +643,40 @@ void parseConfigLine(String line)
     tformat = value;
   } else if (configKeyEquals(key, "brightness")) {
     brightness = value.toInt();
+  } else if (configKeyEquals(key, "mindim")) {
+    mindim = value.toInt();
+  } else if (configKeyEquals(key, "maxdim")) {
+    maxdim = value.toInt();
+  } else if (configKeyEquals(key, "hourspan")) {
+    hourspan = int(max(1L, value.toInt()));
+  } else if (configKeyEquals(key, "sunrise")) {
+    if (parseClockToMinutes(value) != -1)
+    {
+      sunrise_time = value;
+    }
+    else
+    {
+      Serial.print("Invalid sunrise ignored: ");
+      Serial.println(value);
+    }
+  } else if (configKeyEquals(key, "sunset")) {
+    if (parseClockToMinutes(value) != -1)
+    {
+      sunset_time = value;
+    }
+    else
+    {
+      Serial.print("Invalid sunset ignored: ");
+      Serial.println(value);
+    }
+  } else if (configKeyEquals(key, "autodimholdms")) {
+    autodim_hold_ms = int(max(0L, value.toInt()));
+  } else if (configKeyEquals(key, "autodimstepms")) {
+    autodim_step_ms = int(max(10L, value.toInt()));
+  } else if (configKeyEquals(key, "autodimpercent")) {
+    autodim_percent = int(min(100L, max(1L, value.toInt())));
+  } else if (configKeyEquals(key, "autodimdebug")) {
+    autodim_debug = (value.toInt() != 0);
   } else if (configKeyEquals(key, "latitude")) {
     latitude = value;
   } else if (configKeyEquals(key, "longitude")) {
@@ -575,6 +822,55 @@ bool read_system_id_from_sd()
 read_system_id_from_sd_exit:
   end_sd_session();
   return success;
+}
+
+void list_littlefs_files_to_serial()
+{
+  File root;
+  File entry;
+
+  Serial.println("LittleFS files:");
+
+  if (!LittleFS.begin(false))
+  {
+    Serial.println("  <littlefs unavailable>");
+    return;
+  }
+
+  root = LittleFS.open("/");
+  if (!root)
+  {
+    Serial.println("  <cannot open root>");
+    LittleFS.end();
+    return;
+  }
+
+  entry = root.openNextFile();
+  if (!entry)
+  {
+    Serial.println("  <empty>");
+  }
+
+  while (entry)
+  {
+    Serial.print("  ");
+    Serial.print(entry.name());
+    if (entry.isDirectory())
+    {
+      Serial.println("/");
+    }
+    else
+    {
+      Serial.print(" (");
+      Serial.print(entry.size());
+      Serial.println(" bytes)");
+    }
+    entry.close();
+    entry = root.openNextFile();
+  }
+
+  root.close();
+  LittleFS.end();
 }
 
 String build_update_request_url()
@@ -817,9 +1113,11 @@ void setup()
   tft.setTextColor(createColor(128, 255, 128), TFT_BLACK);
   tft.setCursor(0, 30);
   tft.println("Calendar Start");
+  build_version_code = getBuildVersionCode();
 
   read_sd();
   read_system_id();
+  list_littlefs_files_to_serial();
 
   // Backlight after config read
   pinMode(backlightPin, OUTPUT);
@@ -1003,7 +1301,11 @@ bool poll_update_server()
     return true;
   }
 
+  int runtimeBrightnessBeforeApply = brightness;
   apply_config_from_string(current_config_text);
+  // Keep the current runtime backlight level stable across config reloads.
+  // This avoids jumping to the configured static brightness on every update.
+  brightness = runtimeBrightnessBeforeApply;
   reportScheduleEntriesForCurrentTime();
 
   if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
@@ -1052,6 +1354,8 @@ void loop()
   char dateString[40]; // Buffer for long translated month names
   char hourString[3]; //HH
   int timeZone;
+
+  processAutoBrightness(localtime);
   
   // EVENT every hour
   if (localtime.tm_hour != event_tm_hour) {
@@ -1086,6 +1390,7 @@ void loop()
     // draw Date      
     tft.setTextColor(TFT_WHITE, createColor(0, 0, 90));
     tft.drawString(dateString, 38, 0, 4);
+    drawBuildAndSystemInfo();
     renderActiveScheduleEntries(localtime);
     
   }
@@ -1164,6 +1469,31 @@ void loop()
   if (touch_ready && ts.tirqTouched() && ts.touched())  {
     TS_Point p = ts.getPoint();
     printTouchToSerial(p);
+
+    if (p.y > 3200)
+    {
+      if (p.x < 800)
+      {
+        applyBrightnessValue(mindim);
+        auto_dim_resume_ms = millis() + autodim_hold_ms;
+        Serial.print("Instant min dim -> ");
+        Serial.print(brightness);
+        Serial.print(" target=");
+        Serial.println(computeAutoTargetBrightness(localtime));
+      }
+      else if (p.x > 3200)
+      {
+        applyBrightnessValue(maxdim);
+        auto_dim_resume_ms = millis() + autodim_hold_ms;
+        Serial.print("Instant max dim -> ");
+        Serial.print(brightness);
+        Serial.print(" target=");
+        Serial.println(computeAutoTargetBrightness(localtime));
+      }
+      delay(200);
+      return;
+    }
+
     // Adjust brightness
     // Top part of the screen
     if (p.y < 800) {
@@ -1183,7 +1513,8 @@ void loop()
       }
       // Clamp the brightness - Never less than 1, never more than 255
       brightness = min(255,max(1,brightness));
-      analogWrite(backlightPin, brightness);
+      applyBrightnessValue(brightness);
+      auto_dim_resume_ms = millis() + autodim_hold_ms;
       Serial.print("Brightness=");
       Serial.println(brightness);
     }

@@ -5,7 +5,7 @@ This file is the project-facing working list for planned changes that are not ye
 ## Near Term
 
 - Change the clock face font size and continue refining the visual layout.
-- Keep exploring image-based rendering, including server-generated assets for the CYD to display.
+- Keep exploring image-based rendering, including static image assets placed on SD as needed.
 - Move toward a more templatable UI so other people can build their own display layouts.
 - Continue the config source-of-truth migration toward `data/`.
 - Make LittleFS the primary known-good `config.txt` source at runtime.
@@ -55,32 +55,22 @@ This file is the project-facing working list for planned changes that are not ye
 - Evaluate ambient-light-based dimming as the more adaptive mode.
 - Leave room for supporting multiple dimming modes later, such as manual, time-based, and sensor-based.
 
-## Server-Rendered UI Assets
+## Display Asset Strategy
 
-- The Python server will handle image rendering rather than pushing that work onto the CYD.
-- Build toward multi-color SVG source assets that are easy to understand and edit.
-- Define state-driven color mappings outside the SVG so one source asset can render differently depending on the clock state.
-- Use filenames and state naming conventions to indicate both image purpose and visual state.
-- Generate CYD-ready RGB assets for states such as Wi-Fi connected, connecting, or failed.
-- Keep the rendering pipeline generic enough that the same approach can be used for other icons and display elements later.
-- Use predictable generated filenames such as `WIFI_Offline`, `WIFI_Online`, and `WIFI_Reconnecting` for state-specific assets.
-- Allow one source SVG to be rendered into multiple output states by remapping its source colors through a per-state palette definition.
-- Keep source SVG colors visually obvious for editing, then convert them into related tone ranges for the generated runtime assets.
-- Use that palette-mapping approach to create flexible icons with subtle tone variation instead of maintaining separate hand-drawn assets for each state.
+- Prefer static image assets that can be created externally (for example in Paint.NET) and placed on SD.
+- Keep image naming predictable so display states can be swapped without code churn.
+- Keep the clock face dynamic: generate LCD-style segments in RAM and render the composed bitmap to the display.
+- Define a segment model (for example 7-10 segment pieces) that supports runtime scaling, colorization, and style preferences without relying on baked fonts.
+- Keep room for combining static icons and segment-rendered text/clock elements in the same UI.
 
 ### Server Tasks
 
-- Support human-edited schedule sections such as `[Schedule]`, `[Schedule:Bedroom]`, and `[Schedule:Desk]`.
-- Treat `[Schedule]` as the shared/default section that applies to all clocks.
-- If a named clock identity is available, merge `[Schedule]` with the matching per-clock section before emitting flattened `scheduleN` keys.
 - Keep future iCal import support compiling down into the same flat `scheduleN` format.
-- Generate display-ready image assets from SVG sources and state-based color mappings.
+- Keep emitting display-ready schedule/config payloads without assuming server-side SVG rendering.
 
 ### Clock Identity
 
 - Use a small local file such as `/systemid.txt` rather than MAC address to identify the clock.
-- Display the clock name or friendly identity on screen when appropriate in a later pass.
-- Use that identity on the server side to choose which schedule block applies.
 - If `systemid.txt` is missing, treat the device as unnamed and only apply the shared `[Schedule]` entries.
 
 ### Non-Goals For First Pass
@@ -92,7 +82,6 @@ These are deferred features, not rejected features. They are out of scope for th
 - User-facing validation on the ESP32
 - Schedule section parsing on the ESP32
 - Mixed wildcard semantics beyond `*|*`
-- Priority fields
 - Dynamically fitting and showing only as many active events as the current layout allows, while rotating through the larger active set over time
 
 Display example:

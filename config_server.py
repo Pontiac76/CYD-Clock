@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from gen_tzinfo import build_posix_tz_from_zdump
 
 SOURCE_FILE = Path("data/config.txt")
+TEMP_DIR = Path("temp")
 ZONEINFO_ROOT = Path("/usr/share/zoneinfo")
 HEADER_PREFIX = "# CFG "
 BIND_HOST = "0.0.0.0"
@@ -41,6 +42,21 @@ def normalize_section_name(value: str) -> str:
     return name
 
 
+def parse_section_header(value: str) -> tuple[str, int, bool]:
+    section_priority = 1
+    section_priority_explicit = False
+    raw = value.strip()
+    match = re.match(r"^([1-9])~(.+)$", raw)
+    if match:
+        section_priority = int(match.group(1))
+        section_priority_explicit = True
+        raw = match.group(2).strip()
+    normalized = normalize_section_name(raw)
+    if (not section_priority_explicit) and normalized.startswith("scheduled"):
+        section_priority = 9
+    return normalized, section_priority, section_priority_explicit
+
+
 def parse_scheduled_system_ids(section_name: str) -> list[str]:
     if not section_name.startswith("scheduled:"):
         return []
@@ -55,6 +71,16 @@ def parse_scheduled_system_ids(section_name: str) -> list[str]:
         system_ids.append(system_id.lower())
 
     return system_ids
+
+
+def encode_schedule_priority(line: str, section_priority: int, section_priority_explicit: bool) -> str:
+    event_priority = 9
+    entry = line.strip()
+    match = re.match(r"^([1-9])~(.+)$", entry)
+    if match:
+        event_priority = int(match.group(1))
+        entry = match.group(2).strip()
+    return f"{section_priority}~{event_priority}~{entry}"
 
 
 def iter_zone_names():
@@ -116,6 +142,8 @@ def parse_config_lines(lines: list[str]):
     scheduled_common: list[str] = []
     scheduled_per_system: dict[str, list[str]] = {}
     current_section = ""
+    current_section_priority = 1
+    current_section_priority_explicit = False
 
     for raw_line in lines:
         clean = raw_line.rstrip("\r\n")
@@ -128,16 +156,20 @@ def parse_config_lines(lines: list[str]):
             continue
 
         if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = normalize_section_name(stripped[1:-1])
+            current_section, current_section_priority, current_section_priority_explicit = parse_section_header(stripped[1:-1])
             continue
 
         if current_section == "scheduled":
-            scheduled_common.append(stripped)
+            scheduled_common.append(
+                encode_schedule_priority(stripped, current_section_priority, current_section_priority_explicit)
+            )
             continue
 
         if current_section.startswith("scheduled:"):
             for system_id in parse_scheduled_system_ids(current_section):
-                scheduled_per_system.setdefault(system_id, []).append(stripped)
+                scheduled_per_system.setdefault(system_id, []).append(
+                    encode_schedule_priority(stripped, current_section_priority, current_section_priority_explicit)
+                )
             continue
 
         if "=" not in clean:
@@ -181,7 +213,7 @@ def render_scheduled_entries(lines: list[str], start_index: int = 0) -> list[str
 
 
 def build_rendered_path(system_id: str) -> Path:
-    return SOURCE_FILE.parent / f"config.rendered.{system_id}"
+    return TEMP_DIR / f"config.rendered.{system_id}"
 
 
 def rebuild_config_text(system_id: str | None = None) -> bytes:
@@ -259,6 +291,7 @@ def rebuild_config_text(system_id: str | None = None) -> bytes:
     payload = text.encode("utf-8")
 
     if sanitized_system_id != "":
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
         rendered_path = build_rendered_path(sanitized_system_id)
         rendered_path.write_bytes(payload)
 
