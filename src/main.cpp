@@ -85,6 +85,7 @@ String system_id;
 bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
+bool ram_only_mode = false;
 
 int yy_mem = 0;
 int mm_mem = 0;
@@ -336,6 +337,11 @@ void resume_touch_after_sd()
 
 bool begin_sd_session()
 {
+  if (ram_only_mode)
+  {
+    return false;
+  }
+
   suspend_touch_for_sd();
   digitalWrite(XPT2046_CS, HIGH);
 
@@ -553,6 +559,17 @@ bool configKeyEquals(const String &normalizedKey, const char *expectedKey)
   String normalizedExpected = expectedKey;
   normalizedExpected.toLowerCase();
   return normalizedKey == normalizedExpected;
+}
+
+bool detect_sd_available_at_boot()
+{
+  digitalWrite(XPT2046_CS, HIGH);
+  if (!SD.begin(SD_CS))
+  {
+    return false;
+  }
+  SD.end();
+  return true;
 }
 
 String sanitizeSystemId(String value)
@@ -824,6 +841,54 @@ read_system_id_from_sd_exit:
   return success;
 }
 
+bool read_file_text_from_littlefs(const char *path, String &content)
+{
+  File file;
+  bool success = false;
+
+  content = "";
+  if (!LittleFS.begin(false))
+  {
+    return false;
+  }
+
+  file = LittleFS.open(path, FILE_READ);
+  if (!file)
+  {
+    goto read_file_text_from_littlefs_exit;
+  }
+
+  while (file.available())
+  {
+    content += char(file.read());
+  }
+
+  file.close();
+  success = true;
+
+read_file_text_from_littlefs_exit:
+  LittleFS.end();
+  return success;
+}
+
+bool read_config_text_from_littlefs(String &content)
+{
+  return read_file_text_from_littlefs("/config.txt", content);
+}
+
+bool read_system_id_from_littlefs()
+{
+  String rawSystemId = "";
+  if (!read_file_text_from_littlefs("/systemid.txt", rawSystemId))
+  {
+    return false;
+  }
+
+  rawSystemId.trim();
+  system_id = sanitizeSystemId(rawSystemId);
+  return true;
+}
+
 void list_littlefs_files_to_serial()
 {
   File root;
@@ -936,15 +1001,33 @@ bool sync_config_to_sd_and_memory(String newContent, bool &changed)
 void read_sd()
 {
   Serial.println("read_sd: Begin");
-  if (read_config_text_from_sd(current_config_text))
+  if (ram_only_mode)
+  {
+    if (read_config_text_from_littlefs(current_config_text))
+    {
+      Serial.println("RAM_ONLY: Using LittleFS /config.txt");
+      apply_config_from_string(current_config_text);
+    }
+    else
+    {
+      current_config_text = "";
+      Serial.println("RAM_ONLY: LittleFS /config.txt missing -- Using Defaults.");
+    }
+  }
+  else if (read_config_text_from_sd(current_config_text))
   {
     Serial.println("SD-Card: Initialization");
+    apply_config_from_string(current_config_text);
+  }
+  else if (read_config_text_from_littlefs(current_config_text))
+  {
+    Serial.println("LittleFS: Using fallback /config.txt");
     apply_config_from_string(current_config_text);
   }
   else
   {
     current_config_text = "";
-    Serial.println("Configuration File not Found -- Using Defaults.");
+    Serial.println("Configuration File not Found on SD or LittleFS -- Using Defaults.");
   }
   Serial.println("read_sd: End");
 }
@@ -952,7 +1035,27 @@ void read_sd()
 void read_system_id()
 {
   Serial.println("read_system_id: Begin");
-  if (read_system_id_from_sd())
+  if (ram_only_mode)
+  {
+    if (read_system_id_from_littlefs())
+    {
+      if (system_id != "")
+      {
+        Serial.print("System ID (RAM_ONLY/LittleFS): ");
+        Serial.println(system_id);
+      }
+      else
+      {
+        Serial.println("System ID file empty after sanitization (RAM_ONLY/LittleFS)");
+      }
+    }
+    else
+    {
+      system_id = "";
+      Serial.println("RAM_ONLY: System ID not found in LittleFS");
+    }
+  }
+  else if (read_system_id_from_sd())
   {
     if (system_id != "")
     {
@@ -964,9 +1067,22 @@ void read_system_id()
       Serial.println("System ID file empty after sanitization");
     }
   }
+  else if (read_system_id_from_littlefs())
+  {
+    if (system_id != "")
+    {
+      Serial.print("System ID (LittleFS): ");
+      Serial.println(system_id);
+    }
+    else
+    {
+      Serial.println("System ID file empty after sanitization (LittleFS)");
+    }
+  }
   else
   {
-    Serial.println("System ID not found");
+    system_id = "";
+    Serial.println("System ID not found on SD or LittleFS");
   }
   Serial.println("read_system_id: End");
 }
@@ -1035,6 +1151,21 @@ bool bootstrap_config_from_server()
   }
 
   bool changed = false;
+  if (ram_only_mode)
+  {
+    if (current_config_text == payload)
+    {
+      Serial.println("Bootstrap config unchanged (RAM_ONLY)");
+      tft.println("Bootstrap unchanged");
+      return false;
+    }
+    current_config_text = payload;
+    apply_config_from_string(current_config_text);
+    Serial.println("Bootstrap config applied in RAM_ONLY mode");
+    tft.println("Bootstrap applied (RAM_ONLY)");
+    return true;
+  }
+
   if (!sync_config_to_sd_and_memory(payload, changed))
   {
     Serial.println("Failed to write downloaded config");
@@ -1114,6 +1245,17 @@ void setup()
   tft.setCursor(0, 30);
   tft.println("Calendar Start");
   build_version_code = getBuildVersionCode();
+
+  ram_only_mode = !detect_sd_available_at_boot();
+  if (ram_only_mode)
+  {
+    Serial.println("Boot mode: RAM_ONLY (SD missing at boot)");
+    tft.println("Boot mode: RAM_ONLY");
+  }
+  else
+  {
+    Serial.println("Boot mode: SD");
+  }
 
   read_sd();
   read_system_id();
@@ -1289,10 +1431,25 @@ bool poll_update_server()
   }
 
   bool changed = false;
-  if (!sync_config_to_sd_and_memory(payload, changed))
+  if (ram_only_mode)
   {
-    Serial.println("Update check: failed to sync config");
-    return false;
+    if (current_config_text == payload)
+    {
+      Serial.println("Update check: no config changes (RAM_ONLY)");
+      changed = false;
+    }
+    else
+    {
+      current_config_text = payload;
+      changed = true;
+      Serial.println("Update check: RAM_ONLY payload applied in memory");
+    }
+  }
+  else if (!sync_config_to_sd_and_memory(payload, changed))
+  {
+    Serial.println("Update check: failed to sync config, applying volatile RAM config");
+    current_config_text = payload;
+    changed = true;
   }
 
   if (!changed)
