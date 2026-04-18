@@ -5,9 +5,7 @@
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <time.h>
-#include <TimeLib.h>
 //#include <sunset.h>
-#include <Wire.h>
 #include "seven_regular11pt7b.h"
 #include "seven_regular31pt7b.h"
 #include "DSEG14_Classic_Regular_60.h"
@@ -46,9 +44,6 @@ unsigned long next_autodim_debug_ms = 0;
 // RGB conversion
 #define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
 
-// Timer Elapsed Constant
-#define HAS_TIMER_ELAPSED 0
-
 // Default URL to pull config.txt from -- Hard coding is bad m'kay... don't follow this example
 String updateurl;
 #define DEFAULT_UPDATE_URL "http://192.168.4.2:8080"
@@ -69,8 +64,6 @@ String password;
 String tzinfo;
 String tformat;
 String ntpserver;
-String latitude;
-String longitude;
 String WeekDays[WEEKDAY_COUNT] = {
   "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
 };
@@ -79,16 +72,12 @@ String MonthName[MONTH_COUNT] = {
   "July", "August", "September", "October", "November", "December"
 };
 String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
-String Dummy;
 String current_config_text;
 String system_id;
 bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
 bool ram_only_mode = false;
-
-int yy_mem = 0;
-int mm_mem = 0;
 
 int event_tm_hour = -1;
 int event_tm_min = -1;
@@ -457,68 +446,6 @@ bool timesync()
   return exit_status;  
 }
 
-// Calculate the weekday according to ISO 8601 (1 = Mon, 2 = Tue, 3 = Wed, 4 = Thu, 5 = Fri, 6 = Sat, 7 = Sun)
-uint8_t GetWeekday(uint16_t y, uint8_t m, uint8_t d) 
-{
-  static int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
-  y -= m < 3;
-  uint8_t wd = (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
-  return (wd == 0 ? 7 : wd);
-}
-
-// Check whether the year is a leap year
-bool IsLeapYear(uint16_t y) 
-{
-  return  !(y % 4) && ((y % 100) || !(y % 400)); // Leap year calculation (true = leap year, false = not a leap year)
-}
-
-// Number of days in the month
-uint8_t GetDaysOfMonth(uint16_t y, uint8_t m) 
-{
-  static const uint8_t mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if (m == 2 && IsLeapYear(y)) {
-    return 29;
-  } else {
-    return mdays[m - 1];
-  }
-}
-
-// Calculate the week number according to ISO 8601
-uint16_t GetDayOfYear(uint16_t y, uint8_t m, uint8_t d);
-uint8_t GetWeekNumber(uint16_t y, uint8_t m, uint8_t d) 
-{
-  bool LeapYear;
-  uint16_t doy = GetDayOfYear(y, m, d);  // Determine the day number within the year
-  uint8_t wd = GetWeekday(y, m, d);      // Determine the weekday
-  uint8_t wnr = (doy - wd + 10) / 7;     // Calculate the week number (adjusted)
-
-  if (wnr == 0) {                        // If the week number is zero, the day falls at the start of the year (special case 1)
-    wd = GetWeekday(y - 1, 12, 31);      // Determine the last weekday of the previous year
-    LeapYear = IsLeapYear(y - 1);        // Determine whether the previous year was a leap year
-    if (wd < 4) {                        // If December 31 falls before Thursday, then...
-      wnr = 1;                           // it belongs to the first week of the year
-    } else {                             // otherwise determine whether there is a 53rd week (special case 3)
-      wnr = ((wd == 4) || (LeapYear && wd == 5)) ? 53 : 52;
-    }
-  } else if (wnr == 53) {                // If the week number is 53, the day falls at the end of the year (special case 2)
-    wd = GetWeekday(y, 12, 31);          // Determine the last weekday of this year
-    LeapYear = IsLeapYear(y);            // Determine whether this year is a leap year
-    if (wd < 4) {                        // If December 31 falls before Thursday, then...
-      wnr = 1;                           // it belongs to the first week of the next year
-    } else {                             // otherwise determine whether there is a 53rd week (special case 3)
-      wnr = ((wd == 4) || (LeapYear && wd == 5)) ? 53 : 52;
-    }
-  }
-  return wnr;
-}
-
-// Calculate the number of days (day of the year)
-uint16_t GetDayOfYear(uint16_t y, uint8_t m, uint8_t d) 
-{
-  static const uint16_t mdays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
-  return d + mdays[m - 1] + (m >= 2 && IsLeapYear(y));
-}
-
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b) 
 {
   return RGB565(r >> 3, g >> 2, b >> 3);
@@ -694,10 +621,6 @@ void parseConfigLine(String line)
     autodim_percent = int(min(100L, max(1L, value.toInt())));
   } else if (configKeyEquals(key, "autodimdebug")) {
     autodim_debug = (value.toInt() != 0);
-  } else if (configKeyEquals(key, "latitude")) {
-    latitude = value;
-  } else if (configKeyEquals(key, "longitude")) {
-    longitude = value;
   } else if (configKeyEquals(key, "WeekDays")) {
     parseTranslationList(value, WeekDays, WEEKDAY_COUNT);
   } else if (configKeyEquals(key, "MonthName")) {
@@ -1199,34 +1122,6 @@ void printTouchToSerial(TS_Point p)
   Serial.println();
 }
 
-// Soft Timer for loop
-bool SoftTimer(unsigned long time_period_set)
-{
-  static unsigned long time_start_ms;
-  static unsigned long time_period_ms;
-  static bool time_flag = false;
-  bool bflag = false;
-
-  if (time_period_set != 0)
-  {
-    time_start_ms = millis();
-    time_period_ms = time_period_set;
-    time_flag = true;
-    // Serial.println(time_start_ms);
-    // Serial.println(time_period_ms);
-  }
-  else
-  {
-    if (time_flag && ((millis() - time_start_ms) >= time_period_ms))
-    {
-      time_flag = false;
-      bflag = true;
-    }
-  }
-  return bflag;
-}
-
-
 // Start and Config CYD
 void setup() 
 {
@@ -1501,16 +1396,10 @@ void loop()
 {
   struct tm localtime;
   getLocalTime(&localtime);
-  time_t now;
-  time(&now);
-  struct tm *utctime = gmtime(&now);
 
   static char localtimeString[10]; // Buffer for time in HH:MM:SS format
   static char locaxtimeString[10]; // Buffer for time in HH MM format
-  char utctimeString[7]; // Buffer for time in HH:MM format
   char dateString[40]; // Buffer for long translated month names
-  char hourString[3]; //HH
-  int timeZone;
 
   processAutoBrightness(localtime);
   
@@ -1532,13 +1421,6 @@ void loop()
     delay(1000);
     getLocalTime(&localtime);
 
-    //timeZone = (mktime(&localtime) - mktime(utctime)) / 3600; // Difference in hours
-    
-	  struct tm localtime_copy = localtime;
-	  localtime_copy.tm_isdst = 0; // Disable DST
-	  timeZone = (mktime(&localtime_copy) - mktime(utctime)) / 3600;
-	
-   
     // Redraw the clock
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -1557,8 +1439,6 @@ void loop()
   {
     event_tm_min = localtime.tm_min;
     Serial.println("event_tm_min");
-    // UTC Time HH:MM
-    sprintf(utctimeString, "%02d:%02d", utctime->tm_hour, utctime->tm_min);
     renderActiveScheduleEntries(localtime);
   }
 
@@ -1609,7 +1489,6 @@ void loop()
 
     // Draw centered inside sprite
     if (localtime.tm_sec % 2 == 0) {
-    //if (SoftTimer(HAS_TIMER_ELAPSED)) {
       sprite.drawString(localtimeString, sprite.width() / 2, sprite.height() / 2);
     } else {
       sprite.drawString(locaxtimeString, sprite.width() / 2, sprite.height() / 2);
@@ -1617,7 +1496,6 @@ void loop()
 
     sprite.pushSprite(1, 68);
     sprite.deleteSprite();
-    //SoftTimer(500);
       
   }
 
