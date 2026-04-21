@@ -1,31 +1,22 @@
 # TODO
 
-This file is the project-facing working list for planned changes that are not yet fully tracked elsewhere. It is meant to stay lightweight, practical, and easy to update as the clock firmware and helper server evolve.
+This file tracks remaining work only.
 
-## Near Term
+## Next Up
 
 - Change the clock face font size and continue refining the visual layout.
-- Keep exploring image-based rendering, including static image assets placed on SD as needed.
-- Move toward a more templatable UI so other people can build their own display layouts.
+- Add visible network status to the UI.
+- Add last successful NTP sync status to the UI.
 - Continue the config source-of-truth migration toward `data/`.
 - Make LittleFS the primary known-good `config.txt` source at runtime.
 - Read SD card config second and treat it as an override layer on top of the LittleFS baseline.
-- Add visible network status and last successful NTP sync status to the UI.
-
-## Highlights
-
-- Split runtime concerns cleanly: LittleFS baseline config, SD override config, and separate Wi-Fi onboarding data.
-- Keep the ESP32 focused on local parsing, matching, display state, and recovery behavior.
-- Push richer authoring, normalization, section merging, deduplication, and image generation to the Python side.
-- Build toward a reusable, templatable UI rather than a fixed one-off display.
-- Keep room in the design for future richer event views, onboarding flows, and sensor-driven behavior without requiring major rewrites.
 
 ## Scheduled Text Follow-Up
 
-- Add startup/runtime config layering so LittleFS is read first and SD overrides are applied second.
 - Rotate through active-entry combinations over time when more entries are active than can fit on screen.
-- Cache the currently shown message and redraw only when the visible entry changes, if practical.
+- Cache the currently shown schedule content and skip redraws when nothing visible has changed.
 - Add a future full-screen view for active and upcoming events, likely with auto-scrolling.
+- Revisit how many visible schedule lines can fit once the clock-face sizing is settled.
 
 ## Connectivity And Recovery
 
@@ -48,43 +39,44 @@ This file is the project-facing working list for planned changes that are not ye
 - Build toward a UI flow for selecting a Wi-Fi network on-device.
 - Build toward an input method for entering or updating Wi-Fi passwords on-device.
 
-## Dimming Strategy
+## Dimming Follow-Up
 
-- Keep dimming on the roadmap, but do not lock the project into one approach too early.
-- Evaluate time-based dimming as the simpler predictable mode.
-- Evaluate ambient-light-based dimming as the more adaptive mode.
+- Decide whether time-based dimming remains the primary model.
+- Evaluate ambient-light-based dimming as an alternative or additional mode.
 - Leave room for supporting multiple dimming modes later, such as manual, time-based, and sensor-based.
 
 ## Display Asset Strategy
 
-- Prefer static image assets that can be created externally (for example in Paint.NET) and placed on SD.
+- Keep exploring static image assets that can be created externally and placed on SD as needed.
 - Keep image naming predictable so display states can be swapped without code churn.
 - Keep the clock face dynamic: generate LCD-style segments in RAM and render the composed bitmap to the display.
-- Define a segment model (for example 7-10 segment pieces) that supports runtime scaling, colorization, and style preferences without relying on baked fonts.
+- Define a segment model that supports runtime scaling, colorization, and style preferences without relying on baked fonts.
 - Keep room for combining static icons and segment-rendered text/clock elements in the same UI.
+- Use predictable generated filenames such as `WIFI_Offline`, `WIFI_Online`, and `WIFI_Reconnecting` for state-specific assets.
+- Allow one source SVG to be rendered into multiple output states by remapping its source colors through a per-state palette definition.
+- Keep source SVG colors visually obvious for editing, then convert them into related tone ranges for the generated runtime assets.
+- Use that palette-mapping approach to create flexible icons with subtle tone variation instead of maintaining separate hand-drawn assets for each state.
 
-### Server Tasks
+## Server Tasks
 
 - Keep future iCal import support compiling down into the same flat `scheduleN` format.
-- Keep emitting display-ready schedule/config payloads without assuming server-side SVG rendering.
+- Keep emitting display-ready schedule/config payloads without assuming server-side SVG rendering unless that path is chosen explicitly.
+- Generate display-ready image assets from SVG sources and state-based color mappings if the server-rendered icon path is adopted.
+- Continue using shared/default schedule sections plus per-system overrides.
+- Remove perfect duplicate schedule entries after section merging so the same event is not emitted twice.
 
-### Clock Identity
+## Non-Goals For The Next Pass
 
-- Use a small local file such as `/systemid.txt` rather than MAC address to identify the clock.
-- If `systemid.txt` is missing, treat the device as unnamed and only apply the shared `[Schedule]` entries.
-
-### Non-Goals For First Pass
-
-These are deferred features, not rejected features. They are out of scope for the first implementation, but the framework should leave room to support them later without major rewrites.
+These are deferred features, not rejected features. They should not drive the next implementation step, but the structure should not block them later.
 
 - iCal parsing on the ESP32
 - "Show event X days before" logic
 - User-facing validation on the ESP32
 - Schedule section parsing on the ESP32
 - Mixed wildcard semantics beyond `*|*`
-- Dynamically fitting and showing only as many active events as the current layout allows, while rotating through the larger active set over time
+- Full dynamic layout fitting for arbitrarily many active events
 
-Display example:
+Overflow display example:
 
 - If three events are active in the current minute but there is only room for two lines, show two entries at a time.
 - The visible pair should rotate over time based on the sorted active set.

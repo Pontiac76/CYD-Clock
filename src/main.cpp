@@ -51,6 +51,7 @@ String updateurl;
 constexpr int WEEKDAY_COUNT = 7;
 constexpr int MONTH_COUNT = 12;
 constexpr int MAX_TRANSLATION_LENGTH = 24;
+constexpr int MAX_SYSTEM_ID_COUNT = 16;
 // Used to delay the timer when poking the updateurl
 unsigned long next_update_check = 0;
 
@@ -74,6 +75,10 @@ String MonthName[MONTH_COUNT] = {
 String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
 String current_config_text;
 String system_id;
+String system_id_list[MAX_SYSTEM_ID_COUNT];
+int system_id_count = 0;
+int active_system_id_index = 0;
+int system_id_clear_pixel_width = 0;
 bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
@@ -87,6 +92,8 @@ int next_update_modular = 15;
 String build_version_code;
 
 void apply_config_from_string(String content);
+bool poll_update_server();
+void drawBuildAndSystemInfo();
 
 int parseClockToMinutes(const String &value)
 {
@@ -277,13 +284,27 @@ String getBuildVersionCode()
 void drawBuildAndSystemInfo()
 {
   String idText = (system_id == "") ? "no-id" : system_id;
+  uint16_t statusBg = createColor(0, 0, 90);
+  const int rightX = 318;
+  const int idY = 2;
+  const int buildY = 14;
+  const int lineHeight = 10;
+  const int clearPad = 2;
 
   tft.setTextFont(1);
   tft.setTextSize(1);
-  tft.setTextColor(TFT_WHITE, createColor(0, 0, 90));
+  tft.setTextColor(TFT_WHITE, statusBg);
+
+  int idClearWidth = max(system_id_clear_pixel_width, static_cast<int>(tft.textWidth(idText, 1)));
+
+  // Clear a fixed right-aligned lane sized for the longest configured system ID.
+  int idClearX = max(0, rightX - idClearWidth - clearPad);
+  int idClearW = min(320 - idClearX, idClearWidth + (clearPad * 2));
+  tft.fillRect(idClearX, idY, idClearW, lineHeight, statusBg);
+
   tft.setTextDatum(TR_DATUM);
-  tft.drawString(idText, 318, 2, 1);
-  tft.drawString(build_version_code, 318, 14, 1);
+  tft.drawString(idText, rightX, idY, 1);
+  tft.drawString(build_version_code, rightX, buildY, 1);
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -514,6 +535,131 @@ String sanitizeSystemId(String value)
   }
 
   return sanitized;
+}
+
+void clearSystemIdList()
+{
+  for (int index = 0; index < MAX_SYSTEM_ID_COUNT; ++index)
+  {
+    system_id_list[index] = "";
+  }
+  system_id_count = 0;
+  active_system_id_index = 0;
+  system_id = "";
+}
+
+bool addSystemIdIfUnique(String candidate)
+{
+  if (candidate == "")
+  {
+    return false;
+  }
+
+  for (int index = 0; index < system_id_count; ++index)
+  {
+    if (system_id_list[index] == candidate)
+    {
+      return false;
+    }
+  }
+
+  if (system_id_count >= MAX_SYSTEM_ID_COUNT)
+  {
+    return false;
+  }
+
+  system_id_list[system_id_count] = candidate;
+  ++system_id_count;
+  return true;
+}
+
+int computeSystemIdClearPixelWidth()
+{
+  int maxWidth = tft.textWidth("no-id", 1);
+
+  for (int index = 0; index < system_id_count; ++index)
+  {
+    int width = tft.textWidth(system_id_list[index], 1);
+    if (width > maxWidth)
+    {
+      maxWidth = width;
+    }
+  }
+
+  return maxWidth;
+}
+
+void refreshSystemIdClearPixelWidth()
+{
+  tft.setTextFont(1);
+  tft.setTextSize(1);
+  system_id_clear_pixel_width = computeSystemIdClearPixelWidth();
+}
+
+void parseSystemIdList(String rawText)
+{
+  int start = 0;
+  clearSystemIdList();
+
+  while (start <= rawText.length())
+  {
+    int end = rawText.indexOf('\n', start);
+    String line;
+    if (end == -1)
+    {
+      line = rawText.substring(start);
+      start = rawText.length() + 1;
+    }
+    else
+    {
+      line = rawText.substring(start, end);
+      start = end + 1;
+    }
+
+    line.replace("\r", "");
+    line.trim();
+    if ((line == "") || line.startsWith("#"))
+    {
+      continue;
+    }
+
+    addSystemIdIfUnique(sanitizeSystemId(line));
+  }
+
+  if (system_id_count > 0)
+  {
+    active_system_id_index = 0;
+    system_id = system_id_list[active_system_id_index];
+  }
+
+  refreshSystemIdClearPixelWidth();
+}
+
+bool setActiveSystemIdByIndex(int index)
+{
+  if ((system_id_count <= 0) || (index < 0) || (index >= system_id_count))
+  {
+    return false;
+  }
+
+  active_system_id_index = index;
+  system_id = system_id_list[active_system_id_index];
+  return true;
+}
+
+bool advanceActiveSystemId()
+{
+  if (system_id_count <= 1)
+  {
+    return false;
+  }
+
+  int nextIndex = active_system_id_index + 1;
+  if (nextIndex >= system_id_count)
+  {
+    nextIndex = 0;
+  }
+  return setActiveSystemIdByIndex(nextIndex);
 }
 
 bool stringArrayEquals(const String *left, const String *right, int count)
@@ -755,8 +901,7 @@ bool read_system_id_from_sd()
   }
 
   systemIdFile.close();
-  rawSystemId.trim();
-  system_id = sanitizeSystemId(rawSystemId);
+  parseSystemIdList(rawSystemId);
   success = true;
 
 read_system_id_from_sd_exit:
@@ -807,8 +952,7 @@ bool read_system_id_from_littlefs()
     return false;
   }
 
-  rawSystemId.trim();
-  system_id = sanitizeSystemId(rawSystemId);
+  parseSystemIdList(rawSystemId);
   return true;
 }
 
@@ -957,54 +1101,47 @@ void read_sd()
 
 void read_system_id()
 {
-  Serial.println("read_system_id: Begin");
-  if (ram_only_mode)
-  {
-    if (read_system_id_from_littlefs())
+  auto logSystemIdState = [](const char *prefix) {
+    if (system_id_count > 0)
     {
-      if (system_id != "")
-      {
-        Serial.print("System ID (RAM_ONLY/LittleFS): ");
-        Serial.println(system_id);
-      }
-      else
-      {
-        Serial.println("System ID file empty after sanitization (RAM_ONLY/LittleFS)");
-      }
-    }
-    else
-    {
-      system_id = "";
-      Serial.println("RAM_ONLY: System ID not found in LittleFS");
-    }
-  }
-  else if (read_system_id_from_sd())
-  {
-    if (system_id != "")
-    {
-      Serial.print("System ID: ");
-      Serial.println(system_id);
+      Serial.print(prefix);
+      Serial.print(system_id);
+      Serial.print(" (");
+      Serial.print(active_system_id_index + 1);
+      Serial.print("/");
+      Serial.print(system_id_count);
+      Serial.println(")");
     }
     else
     {
       Serial.println("System ID file empty after sanitization");
     }
-  }
-  else if (read_system_id_from_littlefs())
+  };
+
+  Serial.println("read_system_id: Begin");
+  if (ram_only_mode)
   {
-    if (system_id != "")
+    if (read_system_id_from_littlefs())
     {
-      Serial.print("System ID (LittleFS): ");
-      Serial.println(system_id);
+      logSystemIdState("System ID (RAM_ONLY/LittleFS): ");
     }
     else
     {
-      Serial.println("System ID file empty after sanitization (LittleFS)");
+      clearSystemIdList();
+      Serial.println("RAM_ONLY: System ID not found in LittleFS");
     }
+  }
+  else if (read_system_id_from_sd())
+  {
+    logSystemIdState("System ID: ");
+  }
+  else if (read_system_id_from_littlefs())
+  {
+    logSystemIdState("System ID (LittleFS): ");
   }
   else
   {
-    system_id = "";
+    clearSystemIdList();
     Serial.println("System ID not found on SD or LittleFS");
   }
   Serial.println("read_system_id: End");
@@ -1392,6 +1529,57 @@ bool poll_update_server()
   return true;
 }
 
+void handleSystemIdSwitchTouch()
+{
+  struct tm localtime;
+
+  if (!advanceActiveSystemId())
+  {
+    if (system_id_count <= 0)
+    {
+      Serial.println("System ID switch ignored: no IDs loaded");
+    }
+    else
+    {
+      Serial.println("System ID switch ignored: only one ID configured");
+    }
+    return;
+  }
+
+  Serial.print("Active System ID switched to ");
+  Serial.print(system_id);
+  Serial.print(" (");
+  Serial.print(active_system_id_index + 1);
+  Serial.print("/");
+  Serial.print(system_id_count);
+  Serial.println(")");
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("Immediate update check skipped: WiFi not connected");
+  }
+  else if (!poll_update_server())
+  {
+    Serial.println("Immediate update check failed (server unavailable or bad response)");
+  }
+  else
+  {
+    Serial.println("Immediate update check complete");
+  }
+
+  if (!getLocalTime(&localtime, 1000))
+  {
+    Serial.println("Immediate redraw skipped: current time unavailable");
+    drawBuildAndSystemInfo();
+    return;
+  }
+
+  // Only redraw the system/build lane here. The date lane is handled by its
+  // normal periodic redraw path and should not be globally repainted on switch.
+  drawBuildAndSystemInfo();
+  renderActiveScheduleEntries(localtime);
+}
+
 void loop() 
 {
   struct tm localtime;
@@ -1532,6 +1720,13 @@ void loop()
     // Adjust brightness
     // Top part of the screen
     if (p.y < 800) {
+      if ((p.x >= 1200) && (p.x <= 2800))
+      {
+        handleSystemIdSwitchTouch();
+        delay(300);
+        return;
+      }
+
       int brightness_step = 32;
       if (brightness < 64) { brightness_step = 16; }
       if (brightness < 32) { brightness_step = 8;  }
