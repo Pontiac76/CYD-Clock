@@ -1,7 +1,7 @@
 name: "🐞 Report a bug or an issue"
 description: "Report issues or unexpected behaviors."
 title: "[BUG] "
-labels: ["bug","Triage"]
+labels: ["Bug","Triage"]
 body:
   - type: markdown
     attributes:
@@ -14,7 +14,7 @@ body:
       label: "Please confirm these before moving forward"
       description: "Please confirm the following before posting your issue."
       options:
-        - label: "I have searched for my issue and have not found a similiar in the Open or Closed issues."
+        - label: "I have searched for my issue and have not found a similar in the Open or Closed issues."
           required: true
           
   - type: textarea
