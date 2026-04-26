@@ -11,7 +11,7 @@ body:
         Thanks for taking the time to fill out this bug report!
 
   - type: checkboxes
-    id: prerequisites
+    id: aiuse
     attributes:
       label: "AI Use"
       description: "Please confirm the following before posting your issue."
