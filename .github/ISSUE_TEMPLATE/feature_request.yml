@@ -4,6 +4,15 @@ title: "[Feature]: "
 labels: ["Feature Request", "Triage"]
 
 body:
+  - type: textarea
+    id: language
+    attributes:
+      label: "Translation (optional)"
+      description: "If you used a translator, what is your primary language?"
+      placeholder: "e.g. Spanish, German, Japanese"
+    validations:
+      required: false
+    
   - type: checkboxes
     id: prechecks
     attributes:
