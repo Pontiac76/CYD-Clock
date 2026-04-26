@@ -10,16 +10,6 @@ assignees: Pontiac76
 **Describe the bug**
 A clear and concise description of what the bug is.
 
-**Is this a code bug, or usability bug?**
-[ ] Code
-[ ] Usability
-
-**If code bug, describe where in the code you've found the problem**
-Rough Line Number or Function:
-
-**If Usability bug, describe how you got the bug**
-Provide the step by step process to reproduce the behaviour.  Always start from the "main screen".
-
 **Expected behaviour**
 A clear and concise description of what you expected to happen.
 
