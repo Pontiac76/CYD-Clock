@@ -61,7 +61,7 @@ body:
     id: logs
     attributes:
       label: "Screenshots or Logs (if applicable)"
-      description: "If possible, add screenshots (Use phone camera?) or compile logs to help explain your issue.
+      description: "If possible, add screenshots (Use phone camera?) or compile logs to help explain your issue."
       placeholder: "Paste screenshots or logs here"
     validations:
       required: false
