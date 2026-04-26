@@ -9,6 +9,21 @@ body:
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report!
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: "AI Use"
+      description: "Please confirm the following before posting your issue."
+      options:
+        - label: "I acknowledge that a significant portion of this project is AI assisted with generated content."
+          required: true
+        - label: "I acknowledge that the owner of this repository will reviews ALL suggested code provided by any AI with his own eyes and testing scenarios relevant."
+          required: true
+        - label: "I acknowledge that the owner of this repository has no malicious intent, guards this code viciously, to the best of his ability."
+          required: true
+        - label: "I acknowledge that my participation in this project is subject to the repository owners whims.  Meaning, if you are a disturbance to the workflow, act or react in bad faith, you will be banned from submitting issues."
+          required: true
         
   - type: checkboxes
     id: prerequisites
@@ -17,6 +32,10 @@ body:
       description: "Please confirm the following before posting your issue."
       options:
         - label: "I have searched for my issue and have not found a similar in the Open or Closed issues."
+          required: true
+        - label: "I have searched in the TODO.md file to see if this is something planned to be fixed."
+          required: true
+        - label: "I have searched in the REJECTED.md file to see if this is something that will not be fixed."
           required: true
   
   - type: dropdown
