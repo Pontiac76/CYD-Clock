@@ -1,47 +1,54 @@
 name: "🐞 Report a bug or an issue"
 description: "Report issues or unexpected behaviors."
 title: "[BUG] "
-labels: ["Bug","Triage"]
+labels: ["Bug", "Triage"]
 assignees: "Pontiac76"
 
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to fill out this bug report!
-
+- type: textarea
+  id: language
+  attributes:
+    label: "Translation (optional)"
+    description: "If you used a translator, what is your primary language?"
+    placeholder: "e.g. Spanish, German, Japanese"
+  validations:
+    required: false
+    
   - type: checkboxes
     id: aiuse
     attributes:
       label: "AI Use"
       description: "Please confirm the following before posting your issue."
       options:
-        - label: "I acknowledge that a significant portion of this project is AI assisted with generated content."
+        - label: "I understand that this project may, or does, include AI-assisted code, documentation, or generated content."
           required: true
-        - label: "I acknowledge that the owner of this repository will reviews ALL suggested code provided by any AI with his own eyes and testing scenarios relevant."
+        - label: "I understand that disruptive, abusive, spammy, or bad-faith participation may result in the issue being closed and the account being blocked from further participation."
           required: true
-        - label: "I acknowledge that the owner of this repository has no malicious intent, guards this code viciously, to the best of his ability."
-          required: true
-        - label: "I acknowledge that my participation in this project is subject to the repository owners whims.  Meaning, if you are a disturbance to the workflow, act or react in bad faith, you will be banned from submitting issues."
-          required: true
-        
+
+  - type: input
+    id: version
+    attributes:
+      label: "Version / Commit (if known)"
+      description: "Optional — if you're running a specific build, note it here."
+      placeholder: "main / commit hash / release tag"
+    validations:
+      required: false
+      
   - type: checkboxes
     id: prerequisites
     attributes:
       label: "Please confirm these before moving forward"
       description: "Please confirm the following before posting your issue."
       options:
-        - label: "I have searched for my issue and have not found a similar in the Open or Closed issues."
+        - label: "I have searched open and closed issues and did not find a similar report."
           required: true
-        - label: "I have searched in the TODO.md file to see if this is something planned to be fixed."
-          required: true
-        - label: "I have searched in the REJECTED.md file to see if this is something that will not be fixed."
+        - label: "I have checked TODO.md and REJECTED.md for any relevant notes about this issue."
           required: true
   
   - type: dropdown
     id: suggested_priority
     attributes:
-      label: "Suggested Priority"
+      label: "Optional - Your Suggested Priority"
       description: "This is only a suggestion and does not automatically set issue priority."
       options:
         - Sev:1 - High
@@ -94,8 +101,8 @@ body:
     id: logs
     attributes:
       label: "Screenshots or Logs (if applicable)"
-      description: "If possible, add screenshots (Use phone camera?) or compile logs to help explain your issue."
-      placeholder: "Paste screenshots or logs here"
+      description: "If possible, add screenshots, photos, error messages, or compile logs."
+      placeholder: "Paste logs here, or attach screenshots/photos if relevant."
     validations:
       required: false
       
@@ -107,3 +114,4 @@ body:
       placeholder: "Add any other context about the problem here."
     validations:
       required: false
+
