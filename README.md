@@ -1,6 +1,6 @@
 # CYD Clock
 
-`CYD Clock` is a PlatformIO project for the ESP32-2432S028R "Cheap Yellow Display" board. It turns the device into a touchscreen network clock/calendar with a large TFT time display, SD-card based configuration, and optional live config updates from a small HTTP server.
+`CYD Clock` is a PlatformIO project for the ESP32-2432S028R "Cheap Yellow Display" board. It turns the device into a touchscreen network clock with a large TFT time display, SD-card based configuration, and optional live config updates from a small HTTP server.
 
 The firmware reads `config.txt` from the SD card at startup, connects to Wi-Fi, applies time zone and NTP settings, and renders the current date and time on the display. It also supports translated weekday and month names, adjustable screen brightness through touch input, and a bootstrap/update flow that can pull refreshed configuration from a remote URL.
 
