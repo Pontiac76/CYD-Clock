@@ -2,6 +2,8 @@ name: "🐞 Report a bug or an issue"
 description: "Report issues or unexpected behaviors."
 title: "[BUG] "
 labels: ["Bug","Triage"]
+assignees: "Pontiac76"
+
 body:
   - type: markdown
     attributes:
