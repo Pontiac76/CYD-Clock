@@ -16,7 +16,19 @@ body:
       options:
         - label: "I have searched for my issue and have not found a similar in the Open or Closed issues."
           required: true
-          
+  
+  - type: dropdown
+    id: suggested_priority
+    attributes:
+      label: "Suggested Priority"
+      description: "This is only a suggestion and does not automatically set issue priority."
+      options:
+        - Sev:1 - High
+        - Sev:2 - Medium
+        - Sev:3 - Low
+    validations:
+      required: false          
+      
   - type: textarea
     id: description
     attributes:
