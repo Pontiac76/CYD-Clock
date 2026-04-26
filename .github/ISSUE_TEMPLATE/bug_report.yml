@@ -5,14 +5,14 @@ labels: ["Bug", "Triage"]
 assignees: "Pontiac76"
 
 body:
-- type: textarea
-  id: language
-  attributes:
-    label: "Translation (optional)"
-    description: "If you used a translator, what is your primary language?"
-    placeholder: "e.g. Spanish, German, Japanese"
-  validations:
-    required: false
+  - type: textarea
+    id: language
+    attributes:
+      label: "Translation (optional)"
+      description: "If you used a translator, what is your primary language?"
+      placeholder: "e.g. Spanish, German, Japanese"
+    validations:
+      required: false
     
   - type: checkboxes
     id: aiuse
