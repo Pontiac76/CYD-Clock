@@ -20,7 +20,8 @@ If applicable, add screenshots to help explain your problem.  (Phone camera shot
 Using Chrome, go to https://thelastoutpostworkshop.github.io/ESPConnect/ and connect the device.  Use their help forms to get onto the device.  Once connected, on the "Device Info" page, select and copy the first three lines, paste them here.
 
 Sample of what you should paste:
-```ESP32-D0WD-V3 (revision 3)
+```
+ESP32-D0WD-V3 (revision 3)
 ESP32
 ECO3 (r3)
 ```
