@@ -1,32 +1,76 @@
----
-name: Bug report
-about: Bug Swat Request
-title: ''
-labels: bug, Triage
-assignees: Pontiac76
-
----
-
-**Describe the bug**
-A clear and concise description of what the bug is.
-
-**Expected behaviour**
-A clear and concise description of what you expected to happen.
-
-**Screenshots**
-If applicable, add screenshots to help explain your problem.  (Phone camera shots are acceptable)
-
-**Device Type**
-Using Chrome, go to https://thelastoutpostworkshop.github.io/ESPConnect/ and connect the device.  Use their help forms to get onto the device.  Once connected, on the "Device Info" page, select and copy the first three lines, paste them here.
-
-Sample of what you should paste:
-```
-ESP32-D0WD-V3 (revision 3)
-ESP32
-ECO3 (r3)
-```
-
-I don't need/want your MAC address.
-
-**Additional context**
-Add any other context about the problem here.
+name: "🐞 Report a bug or an issue"
+description: "Report issues or unexpected behaviors."
+title: "[BUG] "
+labels: ["bug","Triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+        
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: "Please confirm these before moving forward"
+      description: "Please confirm the following before posting your issue."
+      options:
+        - label: "I have searched for my issue and have not found a similiar in the Open or Closed issues."
+          required: true
+          
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe your issue"
+      description: "Explain the issue you are experiencing, providing as many details as possible."
+      placeholder: "Explain the issue you are experiencing, providing as many details as possible."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Steps to reproduce the issue"
+      description: "How can we reproduce the issue? Please provide detailed steps."
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+      
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+      description: "A clear description of what you expected to happen."
+      placeholder: "I expected the interface to behave like {this} when I do {that}..."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: actual
+    attributes:
+      label: "Actual behavior"
+      description: "Explain what actually happened instead."
+      placeholder: "Instead, I see the behavior as..."
+    validations:
+      required: true
+      
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Screenshots or Logs (if applicable)"
+      description: "If possible, add screenshots (Use phone camera?) or compile logs to help explain your issue.
+      placeholder: "Paste screenshots or logs here"
+    validations:
+      required: false
+      
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Additional context"
+      description: "Any other details or observations that may be helpful."
+      placeholder: "Add any other context about the problem here."
+    validations:
+      required: false
