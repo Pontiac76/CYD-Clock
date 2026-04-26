@@ -13,7 +13,6 @@ A clear and concise description of what the bug is.
 **Is this a code bug, or usability bug?**
 [ ] Code
 [ ] Usability
-[ ] Other
 
 **If code bug, describe where in the code you've found the problem**
 Rough Line Number or Function:
