@@ -5,7 +5,7 @@ labels: ["Bug", "Triage"]
 assignees: "Pontiac76"
 
 body:
-  - type: textarea
+  - type: input
     id: language
     attributes:
       label: "Translation (optional)"
