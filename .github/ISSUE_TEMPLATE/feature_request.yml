@@ -4,7 +4,7 @@ title: "[Feature]: "
 labels: ["Feature Request", "Triage"]
 
 body:
-  - type: textarea
+  - type: input
     id: language
     attributes:
       label: "Translation (optional)"
