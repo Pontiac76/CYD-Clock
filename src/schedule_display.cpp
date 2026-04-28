@@ -820,7 +820,7 @@ void renderActiveScheduleEntries(const struct tm &localtime)
   int drawnCount = 0;
 
   tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
-  tft.setTextColor(createColor(255, 220, 160), TFT_BLACK);
+  tft.setTextColor(scheduleTextColor, TFT_BLACK);
   tft.setTextFont(2);
   tft.setTextSize(2);
 

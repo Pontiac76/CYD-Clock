@@ -27,6 +27,17 @@
 
 //Backlight Pin
 #define backlightPin 21
+#ifndef CDS
+#define CDS 34
+#endif
+constexpr int photoResistorPin = CDS;
+constexpr unsigned long photoResistorLogIntervalMs = 1000;
+int photoResistorBrightRaw = 100;
+int photoResistorDarkRaw = 1024;
+int photoDimSteps = 10;
+int photoDimDeadzone = 2;
+int photoDimTargetStep = -1;
+int photoDimTargetBrightness = -1;
 int brightness = 128; // Brightness (0-255)
 int mindim = 32;
 int maxdim = 128;
@@ -35,6 +46,7 @@ String sunrise_time = "06:00";
 String sunset_time = "18:00";
 unsigned long next_auto_dim_ms = 0;
 unsigned long auto_dim_resume_ms = 0;
+unsigned long next_photoresistor_log_ms = 0;
 int autodim_hold_ms = 2000;
 int autodim_step_ms = 1000;
 int autodim_percent = 10;
@@ -43,6 +55,15 @@ unsigned long next_autodim_debug_ms = 0;
 
 // RGB conversion
 #define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
+
+uint16_t clockTextColor = TFT_RED;
+uint16_t dateTextColor = TFT_WHITE;
+uint16_t dateBgColor = RGB565(0, 0, 90 >> 3);
+uint16_t statusTextColor = TFT_WHITE;
+uint16_t statusBgColor = RGB565(0, 0, 90 >> 3);
+uint16_t scheduleTextColor = RGB565(255 >> 3, 220 >> 2, 160 >> 3);
+uint16_t bootTextColor = RGB565(128 >> 3, 255 >> 2, 128 >> 3);
+uint16_t errorTextColor = RGB565(255 >> 3, 128 >> 2, 128 >> 3);
 
 // Default URL to pull config.txt from -- Hard coding is bad m'kay... don't follow this example
 String updateurl;
@@ -79,6 +100,9 @@ String system_id_list[MAX_SYSTEM_ID_COUNT];
 int system_id_count = 0;
 int active_system_id_index = 0;
 int system_id_clear_pixel_width = 0;
+String cached_config_texts[MAX_SYSTEM_ID_COUNT];
+bool cached_config_loaded[MAX_SYSTEM_ID_COUNT] = { false };
+String config_source_state[MAX_SYSTEM_ID_COUNT];
 bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
@@ -94,6 +118,29 @@ String build_version_code;
 void apply_config_from_string(String content);
 bool poll_update_server();
 void drawBuildAndSystemInfo();
+String build_update_request_url_for_system_id(const String &id);
+void ensure_default_update_url();
+void apply_current_config_with_runtime_state();
+void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback);
+void preload_all_cached_configs_from_server();
+void apply_runtime_NTP_config();
+
+void logPhotoResistorReading()
+{
+  unsigned long nowMs = millis();
+  if (nowMs < next_photoresistor_log_ms)
+  {
+    return;
+  }
+
+  int lightLevel = analogRead(photoResistorPin);
+  Serial.print("Photoresistor GPIO");
+  Serial.print(photoResistorPin);
+  Serial.print(" raw=");
+  Serial.println(lightLevel);
+
+  next_photoresistor_log_ms = nowMs + photoResistorLogIntervalMs;
+}
 
 int parseClockToMinutes(const String &value)
 {
@@ -121,6 +168,186 @@ void applyBrightnessValue(int value)
 {
   brightness = clampBrightness(value);
   analogWrite(backlightPin, brightness);
+}
+
+void setBrightnessFromController(int value, const char *source, bool holdAutoDim, int target = -1, bool logChange = true)
+{
+  applyBrightnessValue(value);
+  if (holdAutoDim)
+  {
+    auto_dim_resume_ms = millis() + autodim_hold_ms;
+  }
+
+  if (!logChange)
+  {
+    return;
+  }
+
+  Serial.print(source);
+  Serial.print(" -> ");
+  Serial.print(brightness);
+  if (target >= 0)
+  {
+    Serial.print(" target=");
+    Serial.print(target);
+  }
+  Serial.println();
+}
+
+int nextBrightnessStepToward(int target)
+{
+  int nextValue = brightness;
+  int gap = abs(target - brightness);
+  int step = max(1, (gap * autodim_percent) / 100);
+
+  if (brightness < target)
+  {
+    nextValue = min(target, brightness + step);
+  }
+  else if (brightness > target)
+  {
+    nextValue = max(target, brightness - step);
+  }
+
+  return nextValue;
+}
+
+int computePhotoDimStepCount()
+{
+  return constrain(photoDimSteps, 2, 255);
+}
+
+void normalizePhotoDimSettings()
+{
+  photoDimSteps = computePhotoDimStepCount();
+  photoDimDeadzone = constrain(photoDimDeadzone, 0, photoDimSteps - 1);
+  photoDimTargetStep = -1;
+  photoDimTargetBrightness = -1;
+}
+
+int computePhotoBrightnessForStep(int stepIndex)
+{
+  int safeMin = clampBrightness(min(mindim, maxdim));
+  int safeMax = clampBrightness(max(mindim, maxdim));
+  int stepCount = computePhotoDimStepCount();
+  int brightnessRange = safeMax - safeMin;
+
+  if (brightnessRange <= 0)
+  {
+    return safeMin;
+  }
+
+  stepIndex = constrain(stepIndex, 0, stepCount - 1);
+  return safeMin + ((brightnessRange * stepIndex) / (stepCount - 1));
+}
+
+int computePhotoTargetStep(int rawLightLevel)
+{
+  int brightRaw = min(photoResistorBrightRaw, photoResistorDarkRaw);
+  int darkRaw = max(photoResistorBrightRaw, photoResistorDarkRaw);
+  int clampedRaw = constrain(rawLightLevel, brightRaw, darkRaw);
+  int stepCount = computePhotoDimStepCount();
+
+  if (brightRaw == darkRaw)
+  {
+    return stepCount - 1;
+  }
+  if (rawLightLevel <= brightRaw)
+  {
+    return stepCount - 1;
+  }
+  if (rawLightLevel >= darkRaw)
+  {
+    return 0;
+  }
+
+  int rawRange = darkRaw - brightRaw;
+  int rawOffsetFromDark = darkRaw - clampedRaw;
+  return (rawOffsetFromDark * (stepCount - 1)) / rawRange;
+}
+
+int computePhotoTargetBrightness(int rawLightLevel)
+{
+  return computePhotoBrightnessForStep(computePhotoTargetStep(rawLightLevel));
+}
+
+int computePhotoDimDeadzone()
+{
+  return constrain(photoDimDeadzone, 0, computePhotoDimStepCount() - 1);
+}
+
+void processPhotoBrightness()
+{
+  unsigned long nowMs = millis();
+  if (nowMs < auto_dim_resume_ms)
+  {
+    return;
+  }
+  if (nowMs < next_auto_dim_ms)
+  {
+    return;
+  }
+
+  int rawLightLevel = analogRead(photoResistorPin);
+  int computedStep = computePhotoTargetStep(rawLightLevel);
+  int computedTarget = computePhotoBrightnessForStep(computedStep);
+  int deadzone = computePhotoDimDeadzone();
+  int brightRaw = min(photoResistorBrightRaw, photoResistorDarkRaw);
+  int darkRaw = max(photoResistorBrightRaw, photoResistorDarkRaw);
+  bool outsidePhotoRange = (rawLightLevel <= brightRaw) || (rawLightLevel >= darkRaw);
+  bool targetChanged = (computedStep != photoDimTargetStep);
+
+  if (photoDimTargetStep == -1)
+  {
+    photoDimTargetStep = computedStep;
+    photoDimTargetBrightness = computedTarget;
+  }
+  else if (targetChanged &&
+           (outsidePhotoRange || (abs(computedStep - photoDimTargetStep) >= deadzone)))
+  {
+    photoDimTargetStep = computedStep;
+    photoDimTargetBrightness = computedTarget;
+    if (autodim_debug)
+    {
+      Serial.print("PhotoDim target accepted=");
+      Serial.print(photoDimTargetBrightness);
+      Serial.print(" step=");
+      Serial.print(photoDimTargetStep);
+      Serial.print(" computed=");
+      Serial.print(computedTarget);
+      Serial.print(" deadzone=");
+      Serial.print(deadzone);
+      if (outsidePhotoRange)
+      {
+        Serial.print(" outside_range=1");
+      }
+      Serial.println();
+    }
+  }
+
+  int nextValue = nextBrightnessStepToward(photoDimTargetBrightness);
+
+  if (nextValue != brightness)
+  {
+    setBrightnessFromController(nextValue, "PhotoDim", false, photoDimTargetBrightness, autodim_debug);
+    if (autodim_debug)
+    {
+      Serial.print("PhotoDim sensor raw=");
+      Serial.print(rawLightLevel);
+      Serial.print(" range=");
+      Serial.print(brightRaw);
+      Serial.print("-");
+      Serial.print(darkRaw);
+      Serial.print(" step=");
+      Serial.print(computedStep);
+      Serial.print(" computed=");
+      Serial.print(computedTarget);
+      Serial.print(" deadzone=");
+      Serial.println(deadzone);
+    }
+  }
+
+  next_auto_dim_ms = nowMs + max(10, autodim_step_ms);
 }
 
 int computeAutoTargetBrightness(const struct tm &localtime)
@@ -191,36 +418,11 @@ void processAutoBrightness(const struct tm &localtime)
   }
 
   int target = computeAutoTargetBrightness(localtime);
-  int nextValue = brightness;
-  int gap = abs(target - brightness);
-  int step = max(1, (gap * autodim_percent) / 100);
-  if (brightness < target)
-  {
-    nextValue = brightness + step;
-    if (nextValue > target)
-    {
-      nextValue = target;
-    }
-  }
-  else if (brightness > target)
-  {
-    nextValue = brightness - step;
-    if (nextValue < target)
-    {
-      nextValue = target;
-    }
-  }
+  int nextValue = nextBrightnessStepToward(target);
 
   if (nextValue != brightness)
   {
-    applyBrightnessValue(nextValue);
-    if (autodim_debug)
-    {
-      Serial.print("AutoDim STEP current=");
-      Serial.print(brightness);
-      Serial.print(" target=");
-      Serial.println(target);
-    }
+    setBrightnessFromController(nextValue, "AutoDim STEP", false, target, autodim_debug);
   }
   else if (autodim_debug && (nowMs >= next_autodim_debug_ms))
   {
@@ -284,7 +486,6 @@ String getBuildVersionCode()
 void drawBuildAndSystemInfo()
 {
   String idText = (system_id == "") ? "no-id" : system_id;
-  uint16_t statusBg = createColor(0, 0, 90);
   const int rightX = 318;
   const int idY = 2;
   const int buildY = 14;
@@ -293,14 +494,14 @@ void drawBuildAndSystemInfo()
 
   tft.setTextFont(1);
   tft.setTextSize(1);
-  tft.setTextColor(TFT_WHITE, statusBg);
+  tft.setTextColor(statusTextColor, statusBgColor);
 
   int idClearWidth = max(system_id_clear_pixel_width, static_cast<int>(tft.textWidth(idText, 1)));
 
   // Clear a fixed right-aligned lane sized for the longest configured system ID.
   int idClearX = max(0, rightX - idClearWidth - clearPad);
   int idClearW = min(320 - idClearX, idClearWidth + (clearPad * 2));
-  tft.fillRect(idClearX, idY, idClearW, lineHeight, statusBg);
+  tft.fillRect(idClearX, idY, idClearW, lineHeight, statusBgColor);
 
   tft.setTextDatum(TR_DATUM);
   tft.drawString(idText, rightX, idY, 1);
@@ -509,6 +710,110 @@ bool configKeyEquals(const String &normalizedKey, const char *expectedKey)
   return normalizedKey == normalizedExpected;
 }
 
+bool parseColorConfigValue(String value, uint16_t &color)
+{
+  unsigned long rawColor;
+  int firstSeparator;
+  int secondSeparator;
+  int red;
+  int green;
+  int blue;
+
+  value.replace("\r", "");
+  value.replace("\n", "");
+  value.trim();
+
+  firstSeparator = value.indexOf(',');
+  if (firstSeparator != -1)
+  {
+    secondSeparator = value.indexOf(',', firstSeparator + 1);
+    if (secondSeparator == -1)
+    {
+      return false;
+    }
+
+    red = value.substring(0, firstSeparator).toInt();
+    green = value.substring(firstSeparator + 1, secondSeparator).toInt();
+    blue = value.substring(secondSeparator + 1).toInt();
+    if ((red < 0) || (red > 255) || (green < 0) || (green > 255) || (blue < 0) || (blue > 255))
+    {
+      return false;
+    }
+
+    color = createColor(red, green, blue);
+    return true;
+  }
+
+  if (value.startsWith("#"))
+  {
+    value = value.substring(1);
+  }
+  else if (value.startsWith("0x") || value.startsWith("0X"))
+  {
+    value = value.substring(2);
+  }
+
+  if (value.length() != 6)
+  {
+    return false;
+  }
+
+  rawColor = strtoul(value.c_str(), nullptr, 16);
+  red = (rawColor >> 16) & 0xFF;
+  green = (rawColor >> 8) & 0xFF;
+  blue = rawColor & 0xFF;
+  color = createColor(red, green, blue);
+  return true;
+}
+
+void normalizePhotoResistorRange()
+{
+  photoResistorBrightRaw = constrain(photoResistorBrightRaw, 0, 4095);
+  photoResistorDarkRaw = constrain(photoResistorDarkRaw, 0, 4095);
+  photoDimTargetStep = -1;
+  photoDimTargetBrightness = -1;
+
+  if (photoResistorBrightRaw == photoResistorDarkRaw)
+  {
+    photoResistorDarkRaw = min(4095, photoResistorBrightRaw + 1);
+  }
+}
+
+bool parsePhotoResistorRange(String value)
+{
+  int separatorIndex;
+  int firstValue;
+  int secondValue;
+
+  value.replace("\r", "");
+  value.replace("\n", "");
+  value.trim();
+
+  separatorIndex = value.indexOf(',');
+  if (separatorIndex == -1)
+  {
+    separatorIndex = value.indexOf(':');
+  }
+  if (separatorIndex == -1)
+  {
+    separatorIndex = value.indexOf('-');
+  }
+  if (separatorIndex == -1)
+  {
+    return false;
+  }
+
+  firstValue = value.substring(0, separatorIndex).toInt();
+  secondValue = value.substring(separatorIndex + 1).toInt();
+
+  photoResistorBrightRaw = min(firstValue, secondValue);
+  photoResistorDarkRaw = max(firstValue, secondValue);
+  normalizePhotoResistorRange();
+  photoDimTargetStep = -1;
+  photoDimTargetBrightness = -1;
+  return true;
+}
+
 bool detect_sd_available_at_boot()
 {
   digitalWrite(XPT2046_CS, HIGH);
@@ -600,6 +905,12 @@ void parseSystemIdList(String rawText)
 {
   int start = 0;
   clearSystemIdList();
+  for (int index = 0; index < MAX_SYSTEM_ID_COUNT; ++index)
+  {
+    cached_config_texts[index] = "";
+    cached_config_loaded[index] = false;
+    config_source_state[index] = "UNSET";
+  }
 
   while (start <= rawText.length())
   {
@@ -660,6 +971,34 @@ bool advanceActiveSystemId()
     nextIndex = 0;
   }
   return setActiveSystemIdByIndex(nextIndex);
+}
+
+String normalizeConfigForCompare(const String &value)
+{
+  String normalized = "";
+  normalized.reserve(value.length());
+
+  for (int index = 0; index < value.length(); ++index)
+  {
+    char current = value.charAt(index);
+    if (current == '\r')
+    {
+      continue;
+    }
+    normalized += static_cast<char>(tolower(static_cast<unsigned char>(current)));
+  }
+
+  return normalized;
+}
+
+bool configContentEqualsNormalized(const String &left, const String &right)
+{
+  return normalizeConfigForCompare(left) == normalizeConfigForCompare(right);
+}
+
+String get_config_cache_path_for_id(const String &id)
+{
+  return String("/config.txt.") + id;
 }
 
 bool stringArrayEquals(const String *left, const String *right, int count)
@@ -737,6 +1076,62 @@ void parseConfigLine(String line)
     mindim = value.toInt();
   } else if (configKeyEquals(key, "maxdim")) {
     maxdim = value.toInt();
+  } else if (configKeyEquals(key, "clockcolor")) {
+    if (parseColorConfigValue(value, clockTextColor))
+    {
+      event_tm_sec = -1;
+    }
+  } else if (configKeyEquals(key, "datecolor")) {
+    if (parseColorConfigValue(value, dateTextColor))
+    {
+      event_tm_hour = -1;
+    }
+  } else if (configKeyEquals(key, "datebgcolor")) {
+    if (parseColorConfigValue(value, dateBgColor))
+    {
+      event_tm_hour = -1;
+    }
+  } else if (configKeyEquals(key, "statuscolor")) {
+    if (parseColorConfigValue(value, statusTextColor))
+    {
+      event_tm_hour = -1;
+    }
+  } else if (configKeyEquals(key, "statusbgcolor")) {
+    if (parseColorConfigValue(value, statusBgColor))
+    {
+      event_tm_hour = -1;
+    }
+  } else if (configKeyEquals(key, "schedulecolor")) {
+    if (parseColorConfigValue(value, scheduleTextColor))
+    {
+      event_tm_min = -1;
+    }
+  } else if (configKeyEquals(key, "bootcolor")) {
+    parseColorConfigValue(value, bootTextColor);
+  } else if (configKeyEquals(key, "errorcolor")) {
+    parseColorConfigValue(value, errorTextColor);
+  } else if (configKeyEquals(key, "photoresistorrange")) {
+    if (!parsePhotoResistorRange(value))
+    {
+      Serial.print("Invalid photoresistorrange ignored: ");
+      Serial.println(value);
+    }
+  } else if (configKeyEquals(key, "photoresistorbright") ||
+             configKeyEquals(key, "photoresistorlow") ||
+             configKeyEquals(key, "maxresistor")) {
+    photoResistorBrightRaw = value.toInt();
+    normalizePhotoResistorRange();
+  } else if (configKeyEquals(key, "photoresistordark") ||
+             configKeyEquals(key, "photoresistorhigh") ||
+             configKeyEquals(key, "minresistor")) {
+    photoResistorDarkRaw = value.toInt();
+    normalizePhotoResistorRange();
+  } else if (configKeyEquals(key, "photodimsteps")) {
+    photoDimSteps = int(min(255L, max(2L, value.toInt())));
+    normalizePhotoDimSettings();
+  } else if (configKeyEquals(key, "photodimdeadzone")) {
+    photoDimDeadzone = value.toInt();
+    normalizePhotoDimSettings();
   } else if (configKeyEquals(key, "hourspan")) {
     hourspan = int(max(1L, value.toInt()));
   } else if (configKeyEquals(key, "sunrise")) {
@@ -847,34 +1242,84 @@ write_config_to_sd_exit:
   return success;
 }
 
-bool read_config_text_from_sd(String &content)
+bool read_text_file_from_sd(const String &path, String &content)
 {
-  File configFile;
+  File file;
   bool success = false;
 
   content = "";
   if (!begin_sd_session())
   {
-    goto read_config_text_from_sd_exit;
+    goto read_text_file_from_sd_exit;
   }
 
-  configFile = SD.open("/config.txt");
-  if (!configFile)
+  file = SD.open(path.c_str(), FILE_READ);
+  if (!file)
   {
-    goto read_config_text_from_sd_exit;
+    goto read_text_file_from_sd_exit;
   }
 
-  while (configFile.available())
+  while (file.available())
   {
-    content += char(configFile.read());
+    content += char(file.read());
   }
 
-  configFile.close();
+  file.close();
   success = true;
 
-read_config_text_from_sd_exit:
+read_text_file_from_sd_exit:
   end_sd_session();
   return success;
+}
+
+bool write_text_file_to_sd(const String &path, const String &content)
+{
+  File file;
+  bool success = false;
+
+  if (!begin_sd_session())
+  {
+    goto write_text_file_to_sd_exit;
+  }
+
+  if (SD.exists(path.c_str()))
+  {
+    if (!SD.remove(path.c_str()))
+    {
+      Serial.print("Cannot remove ");
+      Serial.println(path);
+      goto write_text_file_to_sd_exit;
+    }
+  }
+
+  file = SD.open(path.c_str(), FILE_WRITE);
+  if (!file)
+  {
+    Serial.print("Cannot open ");
+    Serial.print(path);
+    Serial.println(" for write");
+    goto write_text_file_to_sd_exit;
+  }
+
+  if (file.print(content) != content.length())
+  {
+    Serial.print("Short write for ");
+    Serial.println(path);
+    file.close();
+    goto write_text_file_to_sd_exit;
+  }
+
+  file.close();
+  success = true;
+
+write_text_file_to_sd_exit:
+  end_sd_session();
+  return success;
+}
+
+bool read_config_text_from_sd(String &content)
+{
+  return read_text_file_from_sd("/config.txt", content);
 }
 
 bool read_system_id_from_sd()
@@ -1007,9 +1452,14 @@ void list_littlefs_files_to_serial()
 
 String build_update_request_url()
 {
+  return build_update_request_url_for_system_id(system_id);
+}
+
+String build_update_request_url_for_system_id(const String &id)
+{
   String requestUrl = updateurl;
 
-  if (system_id == "")
+  if (id == "")
   {
     return requestUrl;
   }
@@ -1023,8 +1473,183 @@ String build_update_request_url()
     requestUrl += "/&systemid=";
   }
 
-  requestUrl += system_id;
+  requestUrl += id;
   return requestUrl;
+}
+
+void ensure_default_update_url()
+{
+  if (updateurl == "")
+  {
+    updateurl = DEFAULT_UPDATE_URL;
+    Serial.print("updateurl missing, using default: ");
+    Serial.println(updateurl);
+  }
+}
+
+void apply_current_config_with_runtime_state()
+{
+  String old_tzinfo = tzinfo;
+  String old_ntpserver = ntpserver;
+  String old_tformat = tformat;
+  String oldWeekDays[WEEKDAY_COUNT];
+  String oldMonthName[MONTH_COUNT];
+  int runtimeBrightnessBeforeApply = brightness;
+
+  for (int index = 0; index < WEEKDAY_COUNT; ++index)
+  {
+    oldWeekDays[index] = WeekDays[index];
+  }
+  for (int index = 0; index < MONTH_COUNT; ++index)
+  {
+    oldMonthName[index] = MonthName[index];
+  }
+
+  apply_config_from_string(current_config_text);
+  brightness = runtimeBrightnessBeforeApply;
+
+  if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
+  {
+    apply_runtime_NTP_config();
+  }
+
+  if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver) ||
+      (tformat != old_tformat) ||
+      !stringArrayEquals(WeekDays, oldWeekDays, WEEKDAY_COUNT) ||
+      !stringArrayEquals(MonthName, oldMonthName, MONTH_COUNT))
+  {
+    event_tm_hour = -1;
+    event_tm_min = -1;
+    event_tm_sec = -1;
+  }
+}
+
+void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback)
+{
+  String content;
+  String cachePath;
+
+  if ((index < 0) || (index >= system_id_count))
+  {
+    return;
+  }
+
+  cachePath = get_config_cache_path_for_id(system_id_list[index]);
+  if (!ram_only_mode && read_text_file_from_sd(cachePath, content))
+  {
+    cached_config_texts[index] = content;
+    cached_config_loaded[index] = true;
+    config_source_state[index] = "CACHED_SD";
+    return;
+  }
+
+  if (allowLegacyFallback)
+  {
+    if (!ram_only_mode && read_config_text_from_sd(content))
+    {
+      cached_config_texts[index] = content;
+      cached_config_loaded[index] = true;
+      config_source_state[index] = "CACHED_SD_LEGACY";
+      return;
+    }
+
+    if (read_config_text_from_littlefs(content))
+    {
+      cached_config_texts[index] = content;
+      cached_config_loaded[index] = true;
+      config_source_state[index] = "CACHED_LFS";
+      return;
+    }
+  }
+
+  cached_config_texts[index] = "";
+  cached_config_loaded[index] = false;
+  config_source_state[index] = "MISSING";
+}
+
+void preload_all_cached_configs_from_server()
+{
+  HTTPClient http;
+  String payload;
+  String requestUrl;
+  String cachePath;
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("prefetch skipped: WiFi not connected");
+    return;
+  }
+
+  ensure_default_update_url();
+  if (updateurl == "")
+  {
+    Serial.println("prefetch skipped: no updateurl");
+    return;
+  }
+
+  for (int index = 0; index < system_id_count; ++index)
+  {
+    requestUrl = build_update_request_url_for_system_id(system_id_list[index]);
+    Serial.print("Prefetch ");
+    Serial.println(requestUrl);
+    http.begin(requestUrl);
+    http.setTimeout(1500);
+    int httpCode = http.GET();
+
+    if ((httpCode == HTTP_CODE_OK))
+    {
+      payload = http.getString();
+      http.end();
+      if (payload.length() > 0)
+      {
+        bool changed = !cached_config_loaded[index] ||
+                       !configContentEqualsNormalized(cached_config_texts[index], payload);
+        cached_config_texts[index] = payload;
+        cached_config_loaded[index] = true;
+        config_source_state[index] = "LIVE";
+
+        if (!ram_only_mode && changed)
+        {
+          cachePath = get_config_cache_path_for_id(system_id_list[index]);
+          if (!write_text_file_to_sd(cachePath, payload))
+          {
+            Serial.print("Prefetch write failed for ");
+            Serial.println(cachePath);
+          }
+        }
+        continue;
+      }
+    }
+    else if (httpCode > 0)
+    {
+      Serial.print("Prefetch HTTP code ");
+      Serial.print(httpCode);
+      Serial.print(" for ");
+      Serial.println(system_id_list[index]);
+      http.end();
+    }
+    else
+    {
+      Serial.print("Prefetch GET failed for ");
+      Serial.print(system_id_list[index]);
+      Serial.print(": ");
+      Serial.println(http.errorToString(httpCode));
+      http.end();
+    }
+
+    if (!cached_config_loaded[index])
+    {
+      load_cached_config_for_index_from_storage(index, (index == 0));
+    }
+    if (cached_config_loaded[index] && config_source_state[index] == "MISSING")
+    {
+      config_source_state[index] = "CACHED";
+    }
+    if (!cached_config_loaded[index])
+    {
+      config_source_state[index] = "ERROR";
+    }
+  }
 }
 
 bool sync_config_to_sd_and_memory(String newContent, bool &changed)
@@ -1273,7 +1898,7 @@ void setup()
   tft.setFreeFont(&seven_regular11pt7b);
   tft.drawString("CALENDAR V1.1", 0, 0);
   tft.setTextFont(1);
-  tft.setTextColor(createColor(128, 255, 128), TFT_BLACK);
+  tft.setTextColor(bootTextColor, TFT_BLACK);
   tft.setCursor(0, 30);
   tft.println("Calendar Start");
   build_version_code = getBuildVersionCode();
@@ -1289,19 +1914,60 @@ void setup()
     Serial.println("Boot mode: SD");
   }
 
-  read_sd();
   read_system_id();
+  if (system_id_count <= 0)
+  {
+    read_sd();
+  }
+  else
+  {
+    for (int index = 0; index < system_id_count; ++index)
+    {
+      load_cached_config_for_index_from_storage(index, (index == 0));
+      Serial.print("Config source for ");
+      Serial.print(system_id_list[index]);
+      Serial.print(": ");
+      Serial.println(config_source_state[index]);
+    }
+
+    if (cached_config_loaded[0])
+    {
+      current_config_text = cached_config_texts[0];
+      apply_config_from_string(current_config_text);
+    }
+    else
+    {
+      read_sd();
+    }
+  }
   list_littlefs_files_to_serial();
 
   // Backlight after config read
   pinMode(backlightPin, OUTPUT);
   analogWrite(backlightPin, brightness);
+  pinMode(photoResistorPin, INPUT);
+  analogSetPinAttenuation(photoResistorPin, ADC_11db);
+  Serial.print("Photoresistor configured on GPIO");
+  Serial.println(photoResistorPin);
+  Serial.print("Photoresistor range bright=");
+  Serial.print(min(photoResistorBrightRaw, photoResistorDarkRaw));
+  Serial.print(" dark=");
+  Serial.println(max(photoResistorBrightRaw, photoResistorDarkRaw));
 
   if (ssid != "")
   {
     if (wifi_start_STA() == true)
     {
-      bootstrap_config_from_server();
+      preload_all_cached_configs_from_server();
+      if ((system_id_count > 0) && cached_config_loaded[active_system_id_index])
+      {
+        current_config_text = cached_config_texts[active_system_id_index];
+        apply_current_config_with_runtime_state();
+      }
+      else
+      {
+        bootstrap_config_from_server();
+      }
 
       Serial.println("Time Sync ...");
       tft.println("Time Sync ...");
@@ -1312,7 +1978,7 @@ void setup()
       }
       else
       {
-        tft.setTextColor(createColor(255, 128, 128), TFT_BLACK);
+        tft.setTextColor(errorTextColor, TFT_BLACK);
         Serial.println("non Time sync");
         tft.println("non Time sync");
         delay(3000);
@@ -1320,7 +1986,7 @@ void setup()
     }
     else
     {
-      tft.setTextColor(createColor(255, 128, 128), TFT_BLACK);
+      tft.setTextColor(errorTextColor, TFT_BLACK);
       Serial.println("non WiFi connect");
       tft.println("non WiFi connect");
       delay(3000);
@@ -1328,7 +1994,7 @@ void setup()
   }
   else
   {
-    tft.setTextColor(createColor(255, 128, 128), TFT_BLACK);
+    tft.setTextColor(errorTextColor, TFT_BLACK);
     Serial.println("non SSID or SD Configuration");
     tft.println("non SSID or SD Configuration");
     delay(3000);
@@ -1395,32 +2061,10 @@ bool poll_update_server()
   String payload;
   int httpCode;
   String requestUrl;
+  String cachePath;
+  int activeIndex = active_system_id_index;
 
-  String old_ssid = ssid;
-  String old_password = password;
-  String old_tzinfo = tzinfo;
-  String old_ntpserver = ntpserver;
-  String old_tformat = tformat;
-  String old_updateurl = updateurl;
-  String oldWeekDays[WEEKDAY_COUNT];
-  String oldMonthName[MONTH_COUNT];
-
-  for (int index = 0; index < WEEKDAY_COUNT; ++index)
-  {
-    oldWeekDays[index] = WeekDays[index];
-  }
-
-  for (int index = 0; index < MONTH_COUNT; ++index)
-  {
-    oldMonthName[index] = MonthName[index];
-  }
-
-  if (updateurl == "")
-  {
-    Serial.println("Update check skipped: no updateurl");
-    next_update_modular = min(next_update_modular,1440);
-    return false;
-  }
+  ensure_default_update_url();
 
   if (WiFi.status() != WL_CONNECTED)
   {
@@ -1462,69 +2106,40 @@ bool poll_update_server()
     return false;
   }
 
-  bool changed = false;
-  if (ram_only_mode)
+  bool changed = !configContentEqualsNormalized(current_config_text, payload);
+
+  if ((activeIndex >= 0) && (activeIndex < system_id_count))
   {
-    if (current_config_text == payload)
+    bool cacheChanged = !cached_config_loaded[activeIndex] ||
+                        !configContentEqualsNormalized(cached_config_texts[activeIndex], payload);
+    cached_config_texts[activeIndex] = payload;
+    cached_config_loaded[activeIndex] = true;
+    config_source_state[activeIndex] = "LIVE";
+    Serial.print("Config state ");
+    Serial.print(system_id_list[activeIndex]);
+    Serial.println(": LIVE");
+
+    if (!ram_only_mode && cacheChanged)
     {
-      Serial.println("Update check: no config changes (RAM_ONLY)");
-      changed = false;
+      cachePath = get_config_cache_path_for_id(system_id_list[activeIndex]);
+      if (!write_text_file_to_sd(cachePath, payload))
+      {
+        Serial.print("Update check: failed to write ");
+        Serial.println(cachePath);
+      }
     }
-    else
-    {
-      current_config_text = payload;
-      changed = true;
-      Serial.println("Update check: RAM_ONLY payload applied in memory");
-    }
-  }
-  else if (!sync_config_to_sd_and_memory(payload, changed))
-  {
-    Serial.println("Update check: failed to sync config, applying volatile RAM config");
-    current_config_text = payload;
-    changed = true;
   }
 
   if (!changed)
   {
+    Serial.println("Update check: no config delta");
     reportScheduleEntriesForCurrentTime();
     return true;
   }
 
-  int runtimeBrightnessBeforeApply = brightness;
-  apply_config_from_string(current_config_text);
-  // Keep the current runtime backlight level stable across config reloads.
-  // This avoids jumping to the configured static brightness on every update.
-  brightness = runtimeBrightnessBeforeApply;
+  current_config_text = payload;
+  apply_current_config_with_runtime_state();
   reportScheduleEntriesForCurrentTime();
-
-  if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
-  {
-    apply_runtime_NTP_config();
-    event_tm_hour = -1;
-    event_tm_min = -1;
-    event_tm_sec = -1;
-  }
-
-  if (!stringArrayEquals(WeekDays, oldWeekDays, WEEKDAY_COUNT) ||
-      !stringArrayEquals(MonthName, oldMonthName, MONTH_COUNT) ||
-      (tformat != old_tformat))
-  {
-    event_tm_hour = -1;
-    event_tm_min = -1;
-    event_tm_sec = -1;
-  }
-
-  if (updateurl != old_updateurl)
-  {
-    Serial.print("updateurl changed to ");
-    Serial.println(updateurl);
-  }
-
-  if ((ssid != old_ssid) || (password != old_password))
-  {
-    Serial.println("WiFi credentials changed");
-    Serial.println("Reconnect will be needed");
-  }
 
   return true;
 }
@@ -1553,6 +2168,23 @@ void handleSystemIdSwitchTouch()
   Serial.print("/");
   Serial.print(system_id_count);
   Serial.println(")");
+
+  if (!cached_config_loaded[active_system_id_index])
+  {
+    load_cached_config_for_index_from_storage(active_system_id_index, false);
+  }
+
+  if (cached_config_loaded[active_system_id_index])
+  {
+    current_config_text = cached_config_texts[active_system_id_index];
+    apply_current_config_with_runtime_state();
+    Serial.print("Switch apply source: ");
+    Serial.println(config_source_state[active_system_id_index]);
+  }
+  else
+  {
+    Serial.println("Switch apply source: MISSING");
+  }
 
   if (WiFi.status() != WL_CONNECTED)
   {
@@ -1589,7 +2221,8 @@ void loop()
   static char locaxtimeString[10]; // Buffer for time in HH MM format
   char dateString[40]; // Buffer for long translated month names
 
-  processAutoBrightness(localtime);
+  // processAutoBrightness(localtime);
+  processPhotoBrightness();
   
   // EVENT every hour
   if (localtime.tm_hour != event_tm_hour) {
@@ -1615,7 +2248,7 @@ void loop()
     tft.setCursor (0,0);
     
     // draw Date      
-    tft.setTextColor(TFT_WHITE, createColor(0, 0, 90));
+    tft.setTextColor(dateTextColor, dateBgColor);
     tft.drawString(dateString, 38, 0, 4);
     drawBuildAndSystemInfo();
     renderActiveScheduleEntries(localtime);
@@ -1670,7 +2303,7 @@ void loop()
 
     sprite.setFreeFont(&DSEG14_Classic_Regular_60);
     //sprite.setFreeFont(&seven_regular31pt7b);
-    sprite.setTextColor(TFT_RED);  // no background overwrite
+    sprite.setTextColor(clockTextColor);  // no background overwrite
 
     // Set text alignment to middle-center
     sprite.setTextDatum(MC_DATUM);
@@ -1697,21 +2330,13 @@ void loop()
     {
       if (p.x < 800)
       {
-        applyBrightnessValue(mindim);
-        auto_dim_resume_ms = millis() + autodim_hold_ms;
-        Serial.print("Instant min dim -> ");
-        Serial.print(brightness);
-        Serial.print(" target=");
-        Serial.println(computeAutoTargetBrightness(localtime));
+        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+        setBrightnessFromController(mindim, "Instant min dim", true, target);
       }
       else if (p.x > 3200)
       {
-        applyBrightnessValue(maxdim);
-        auto_dim_resume_ms = millis() + autodim_hold_ms;
-        Serial.print("Instant max dim -> ");
-        Serial.print(brightness);
-        Serial.print(" target=");
-        Serial.println(computeAutoTargetBrightness(localtime));
+        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+        setBrightnessFromController(maxdim, "Instant max dim", true, target);
       }
       delay(200);
       return;
@@ -1735,18 +2360,12 @@ void loop()
       if (brightness < 4)  { brightness_step = 1;  }
       // Top-Left of the screen
       if (p.x < 800) {
-        brightness = brightness - brightness_step;
+        setBrightnessFromController(brightness - brightness_step, "Brightness", true);
       }
       // Top-right of the screen
       if (p.x > 3200) {
-        brightness = brightness + brightness_step;
+        setBrightnessFromController(brightness + brightness_step, "Brightness", true);
       }
-      // Clamp the brightness - Never less than 1, never more than 255
-      brightness = min(255,max(1,brightness));
-      applyBrightnessValue(brightness);
-      auto_dim_resume_ms = millis() + autodim_hold_ms;
-      Serial.print("Brightness=");
-      Serial.println(brightness);
     }
     delay(300);
   }
