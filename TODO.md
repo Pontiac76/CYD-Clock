@@ -31,6 +31,14 @@ This file tracks remaining work only.
 - Use targeted firewall or service blocking to simulate unreachable resources during development.
 - Build toward repeatable retry and recovery tests for dead APs, bad credentials, and fallback AP selection.
 
+## Data sensitivity
+ - The config.txt sitting in data is a file that's pushed out to littlefs.  We should consider this exact file to be available to the public that's read as a backup only after wifi is setup and processed.
+ - That is going to affect the server.  The server should read the _private/config.txt file instead and use that to serve out the text file to the CYD on request
+ - If this device is going to be sold to the public, it should have some foundations for a new user to use, such as connecting with BT to setup WiFi.
+
+## OTA Updates
+ - Figure out what's going to be necessary for over the air updates.
+
 ## Wi-Fi Configuration And Onboarding
 
 - Move Wi-Fi credentials out of `config.txt` into a dedicated `wifi.txt` file.
