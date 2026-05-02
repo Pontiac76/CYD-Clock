@@ -520,6 +520,143 @@ bool matchesMonthDay(const struct tm &localtime, const String &value)
   return ((localtime.tm_mon + 1) == month) && (localtime.tm_mday == day);
 }
 
+bool isIntegerText(String value)
+{
+  int startIndex = 0;
+
+  value.trim();
+  if (value == "")
+  {
+    return false;
+  }
+
+  if ((value.charAt(0) == '-') || (value.charAt(0) == '+'))
+  {
+    if (value.length() == 1)
+    {
+      return false;
+    }
+    startIndex = 1;
+  }
+
+  for (int index = startIndex; index < value.length(); ++index)
+  {
+    if (!isDigit(value.charAt(index)))
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool isLeapYear(int year)
+{
+  if ((year % 400) == 0)
+  {
+    return true;
+  }
+
+  if ((year % 100) == 0)
+  {
+    return false;
+  }
+
+  return (year % 4) == 0;
+}
+
+int getDaysInMonth(int year, int month)
+{
+  static const int DAYS_IN_MONTH[] = {
+    31, 28, 31, 30, 31, 30,
+    31, 31, 30, 31, 30, 31
+  };
+
+  if ((month < 1) || (month > 12))
+  {
+    return 0;
+  }
+
+  if (month == 2 && isLeapYear(year))
+  {
+    return 29;
+  }
+
+  return DAYS_IN_MONTH[month - 1];
+}
+
+bool matchesMonthlySelector(const struct tm &localtime, int daySelector)
+{
+  int year = localtime.tm_year + 1900;
+  int month = localtime.tm_mon + 1;
+  int daysInMonth = getDaysInMonth(year, month);
+  int targetDay;
+
+  if ((daySelector == 0) || (daysInMonth <= 0))
+  {
+    return false;
+  }
+
+  if (daySelector > 0)
+  {
+    targetDay = daySelector;
+  }
+  else
+  {
+    targetDay = daysInMonth + daySelector + 1;
+  }
+
+  if ((targetDay < 1) || (targetDay > daysInMonth))
+  {
+    return false;
+  }
+
+  return localtime.tm_mday == targetDay;
+}
+
+bool matchesMonthlyRule(const struct tm &localtime, String ruleValue)
+{
+  int separatorIndex;
+  String monthText;
+  String selectorText;
+  int month;
+
+  ruleValue.trim();
+  if (ruleValue == "")
+  {
+    return false;
+  }
+
+  separatorIndex = ruleValue.indexOf(':');
+  if (separatorIndex == -1)
+  {
+    if (!isIntegerText(ruleValue))
+    {
+      return false;
+    }
+
+    return matchesMonthlySelector(localtime, ruleValue.toInt());
+  }
+
+  monthText = ruleValue.substring(0, separatorIndex);
+  selectorText = ruleValue.substring(separatorIndex + 1);
+  monthText.trim();
+  selectorText.trim();
+
+  if (!isIntegerText(monthText) || !isIntegerText(selectorText))
+  {
+    return false;
+  }
+
+  month = monthText.toInt();
+  if ((month < 1) || (month > 12) || ((localtime.tm_mon + 1) != month))
+  {
+    return false;
+  }
+
+  return matchesMonthlySelector(localtime, selectorText.toInt());
+}
+
 bool matchesDayOfWeek(const struct tm &localtime, String value)
 {
   static const char *DAY_NAMES[] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
@@ -674,6 +811,11 @@ bool doesScheduleEntryMatchDate(const struct tm &localtime, String ruleSpec)
     }
 
     return matchesMonthDay(localtime, ruleValue);
+  }
+
+  if (ruleName == "monthly")
+  {
+    return matchesMonthlyRule(localtime, ruleValue);
   }
 
   if (ruleName == "mod")

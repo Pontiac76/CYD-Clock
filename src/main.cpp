@@ -1401,6 +1401,55 @@ bool read_system_id_from_littlefs()
   return true;
 }
 
+void list_sd_files_to_serial()
+{
+  File root;
+  File entry;
+
+  Serial.println("SD files:");
+
+  if (!begin_sd_session())
+  {
+    Serial.println("  <sd unavailable>");
+    return;
+  }
+
+  root = SD.open("/");
+  if (!root)
+  {
+    Serial.println("  <cannot open root>");
+    end_sd_session();
+    return;
+  }
+
+  entry = root.openNextFile();
+  if (!entry)
+  {
+    Serial.println("  <empty>");
+  }
+
+  while (entry)
+  {
+    Serial.print("  ");
+    Serial.print(entry.name());
+    if (entry.isDirectory())
+    {
+      Serial.println("/");
+    }
+    else
+    {
+      Serial.print(" (");
+      Serial.print(entry.size());
+      Serial.println(" bytes)");
+    }
+    entry.close();
+    entry = root.openNextFile();
+  }
+
+  root.close();
+  end_sd_session();
+}
+
 void list_littlefs_files_to_serial()
 {
   File root;
@@ -1708,18 +1757,18 @@ void read_sd()
   }
   else if (read_config_text_from_sd(current_config_text))
   {
-    Serial.println("SD-Card: Initialization");
+    Serial.println("Config source: SD /config.txt");
     apply_config_from_string(current_config_text);
   }
   else if (read_config_text_from_littlefs(current_config_text))
   {
-    Serial.println("LittleFS: Using fallback /config.txt");
+    Serial.println("Config source: LittleFS /config.txt");
     apply_config_from_string(current_config_text);
   }
   else
   {
     current_config_text = "";
-    Serial.println("Configuration File not Found on SD or LittleFS -- Using Defaults.");
+    Serial.println("Config source: defaults (/config.txt missing on SD and LittleFS)");
   }
   Serial.println("read_sd: End");
 }
@@ -1748,26 +1797,26 @@ void read_system_id()
   {
     if (read_system_id_from_littlefs())
     {
-      logSystemIdState("System ID (RAM_ONLY/LittleFS): ");
+      logSystemIdState("System ID source: RAM_ONLY LittleFS /systemid.txt -> ");
     }
     else
     {
       clearSystemIdList();
-      Serial.println("RAM_ONLY: System ID not found in LittleFS");
+      Serial.println("System ID source: none (RAM_ONLY LittleFS /systemid.txt missing)");
     }
   }
   else if (read_system_id_from_sd())
   {
-    logSystemIdState("System ID: ");
+    logSystemIdState("System ID source: SD /systemid.txt -> ");
   }
   else if (read_system_id_from_littlefs())
   {
-    logSystemIdState("System ID (LittleFS): ");
+    logSystemIdState("System ID source: LittleFS /systemid.txt -> ");
   }
   else
   {
     clearSystemIdList();
-    Serial.println("System ID not found on SD or LittleFS");
+    Serial.println("System ID source: none (/systemid.txt missing on SD and LittleFS)");
   }
   Serial.println("read_system_id: End");
 }
@@ -1914,6 +1963,9 @@ void setup()
     Serial.println("Boot mode: SD");
   }
 
+  list_sd_files_to_serial();
+  list_littlefs_files_to_serial();
+
   read_system_id();
   if (system_id_count <= 0)
   {
@@ -1940,7 +1992,6 @@ void setup()
       read_sd();
     }
   }
-  list_littlefs_files_to_serial();
 
   // Backlight after config read
   pinMode(backlightPin, OUTPUT);
