@@ -13,6 +13,7 @@
 #include "schedule_display.h"
 #include <HTTPClient.h>
 #include <LittleFS.h>
+#include <qrcode.h>
 
 //Touch Pins
 #define XPT2046_IRQ 36
@@ -671,6 +672,51 @@ bool timesync()
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b) 
 {
   return RGB565(r >> 3, g >> 2, b >> 3);
+}
+
+void drawQrCode(const char *payload, const char *caption)
+{
+  constexpr uint8_t qrVersion = 5;
+  constexpr uint8_t quietZoneModules = 4;
+  QRCode qrcode;
+  uint8_t qrcodeBytes[qrcode_getBufferSize(qrVersion)];
+
+  qrcode_initText(&qrcode, qrcodeBytes, qrVersion, ECC_LOW, payload);
+
+  int totalModules = qrcode.size + (quietZoneModules * 2);
+  int availableWidth = static_cast<int>(tft.width());
+  int availableHeight = static_cast<int>(tft.height()) - 32;
+  int moduleSize = min(availableWidth, availableHeight) / totalModules;
+  moduleSize = max(1, moduleSize);
+
+  int qrPixelSize = totalModules * moduleSize;
+  int qrX = (tft.width() - qrPixelSize) / 2;
+  int qrY = 8;
+  int codeX = qrX + (quietZoneModules * moduleSize);
+  int codeY = qrY + (quietZoneModules * moduleSize);
+
+  tft.fillScreen(TFT_WHITE);
+  tft.fillRect(qrX, qrY, qrPixelSize, qrPixelSize, TFT_WHITE);
+
+  for (uint8_t y = 0; y < qrcode.size; ++y)
+  {
+    for (uint8_t x = 0; x < qrcode.size; ++x)
+    {
+      if (qrcode_getModule(&qrcode, x, y))
+      {
+        tft.fillRect(codeX + (x * moduleSize), codeY + (y * moduleSize), moduleSize, moduleSize, TFT_BLACK);
+      }
+    }
+  }
+
+  if (caption != nullptr)
+  {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawString(caption, tft.width() / 2, min(tft.height() - 12, qrY + qrPixelSize + 14), 2);
+    tft.setTextDatum(TL_DATUM);
+  }
 }
 
 String sanitizeTranslationToken(String token)
@@ -2055,6 +2101,8 @@ void setup()
   #if ENABLE_TOUCH
   initialize_touch();
   #endif
+
+  drawQrCode("WIFI:T:WPA;S:CYD-Clock-Setup;P:cydclocksetup;;", "CYD setup AP");
 
   delay(100);
 }
