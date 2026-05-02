@@ -2263,165 +2263,170 @@ void handleSystemIdSwitchTouch()
   renderActiveScheduleEntries(localtime);
 }
 
-void loop() 
-{
-  struct tm localtime;
-  getLocalTime(&localtime);
 
-  static char localtimeString[10]; // Buffer for time in HH:MM:SS format
-  static char locaxtimeString[10]; // Buffer for time in HH MM format
-  char dateString[40]; // Buffer for long translated month names
+void loop() {
 
-  // processAutoBrightness(localtime);
-  processPhotoBrightness();
-  
-  // EVENT every hour
-  if (localtime.tm_hour != event_tm_hour) {
-    event_tm_hour = localtime.tm_hour;
-    Serial.println("event_tm_hour");
-    // LOCAL Date TT.MO.YYYY
-    //sprintf(dateString, "%02d.%02d.%04d", localtime.tm_mday, localtime.tm_mon + 1, localtime.tm_year + 1900);
-    snprintf(dateString, sizeof(dateString),
-         "%s %d, %04d",
-         MonthName[localtime.tm_mon].c_str(),
-         localtime.tm_mday,
-         localtime.tm_year + 1900);
-    // Calculate the time zone based on the difference between local time and UTC
-
-    tft.println("NTP Sync");
-    configTzTime(tzinfo.c_str(), ntpserver.c_str()); // Synchronize ESP32 system time with NTP
-    delay(1000);
-    getLocalTime(&localtime);
-
-    // Redraw the clock
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.setCursor (0,0);
-    
-    // draw Date      
-    tft.setTextColor(dateTextColor, dateBgColor);
-    tft.drawString(dateString, 38, 0, 4);
-    drawBuildAndSystemInfo();
-    renderActiveScheduleEntries(localtime);
-    
-  }
-
-  // EVENT every min
-  if (localtime.tm_min != event_tm_min)
-  {
-    event_tm_min = localtime.tm_min;
-    Serial.println("event_tm_min");
-    renderActiveScheduleEntries(localtime);
-  }
-
-  // EVENT every sec
-  if (localtime.tm_sec != event_tm_sec)
-  {
-    unsigned long now_ms = millis();
-
-    // Poll the remote server for an update to config.txt
-    if (now_ms >= next_update_check)
-    {
-      if ((localtime.tm_sec % next_update_modular) == 0)
-      {
-        poll_update_server();
-        next_update_check = now_ms + 1000;
-      }
-    }
-    
-    event_tm_sec = localtime.tm_sec;
-    // Serial.println("event_tm_sec");
-    // LOCAL Time .HH:MM:SS
-    if (tformat == "24")
-    {
-      // Define localtimeString and locaxtimeString as the formatted time for 24h format
-      snprintf(localtimeString, sizeof(localtimeString), "%02d:%02d", localtime.tm_hour, localtime.tm_min);
-      snprintf(locaxtimeString, sizeof(locaxtimeString), "%02d %02d", localtime.tm_hour, localtime.tm_min);
-    }
-    else
-    {
-      int hour12 = localtime.tm_hour % 12;
-      if (hour12 == 0) { hour12 = 12; }
-      // Define localtimeString and locaxtimeString as the formatted time for 12h format
-      snprintf(localtimeString, sizeof(localtimeString), "%2d:%02d", hour12, localtime.tm_min);
-      snprintf(locaxtimeString, sizeof(locaxtimeString), "%2d %02d", hour12, localtime.tm_min);
-    }
-    // draw Time to CLOCK
-    // without Flicker with Sprite
-    TFT_eSprite sprite = TFT_eSprite(&tft);
-    sprite.createSprite(318, 61);
-    sprite.fillSprite(TFT_BLACK);  // triple zero
-
-    sprite.setFreeFont(&DSEG14_Classic_Regular_60);
-    //sprite.setFreeFont(&seven_regular31pt7b);
-    sprite.setTextColor(clockTextColor);  // no background overwrite
-
-    // Set text alignment to middle-center
-    sprite.setTextDatum(MC_DATUM);
-
-    // Draw centered inside sprite
-    if (localtime.tm_sec % 2 == 0) {
-      sprite.drawString(localtimeString, sprite.width() / 2, sprite.height() / 2);
-    } else {
-      sprite.drawString(locaxtimeString, sprite.width() / 2, sprite.height() / 2);
-    }
-
-    sprite.pushSprite(1, 68);
-    sprite.deleteSprite();
-      
-  }
-
-  // EVENT Pen touch
-  #if ENABLE_TOUCH
-  if (touch_ready && ts.tirqTouched() && ts.touched())  {
-    TS_Point p = ts.getPoint();
-    printTouchToSerial(p);
-
-    if (p.y > 3200)
-    {
-      if (p.x < 800)
-      {
-        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
-        setBrightnessFromController(mindim, "Instant min dim", true, target);
-      }
-      else if (p.x > 3200)
-      {
-        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
-        setBrightnessFromController(maxdim, "Instant max dim", true, target);
-      }
-      delay(200);
-      return;
-    }
-
-    // Adjust brightness
-    // Top part of the screen
-    if (p.y < 800) {
-      if ((p.x >= 1200) && (p.x <= 2800))
-      {
-        handleSystemIdSwitchTouch();
-        delay(300);
-        return;
-      }
-
-      int brightness_step = 32;
-      if (brightness < 64) { brightness_step = 16; }
-      if (brightness < 32) { brightness_step = 8;  }
-      if (brightness < 16) { brightness_step = 4;  }
-      if (brightness < 8)  { brightness_step = 2;  }
-      if (brightness < 4)  { brightness_step = 1;  }
-      // Top-Left of the screen
-      if (p.x < 800) {
-        setBrightnessFromController(brightness - brightness_step, "Brightness", true);
-      }
-      // Top-right of the screen
-      if (p.x > 3200) {
-        setBrightnessFromController(brightness + brightness_step, "Brightness", true);
-      }
-    }
-    delay(300);
-  }
-  #endif
 }
+
+// void loop() 
+// {
+//   struct tm localtime;
+//   getLocalTime(&localtime);
+
+//   static char localtimeString[10]; // Buffer for time in HH:MM:SS format
+//   static char locaxtimeString[10]; // Buffer for time in HH MM format
+//   char dateString[40]; // Buffer for long translated month names
+
+//   // processAutoBrightness(localtime);
+//   processPhotoBrightness();
+  
+//   // EVENT every hour
+//   if (localtime.tm_hour != event_tm_hour) {
+//     event_tm_hour = localtime.tm_hour;
+//     Serial.println("event_tm_hour");
+//     // LOCAL Date TT.MO.YYYY
+//     //sprintf(dateString, "%02d.%02d.%04d", localtime.tm_mday, localtime.tm_mon + 1, localtime.tm_year + 1900);
+//     snprintf(dateString, sizeof(dateString),
+//          "%s %d, %04d",
+//          MonthName[localtime.tm_mon].c_str(),
+//          localtime.tm_mday,
+//          localtime.tm_year + 1900);
+//     // Calculate the time zone based on the difference between local time and UTC
+
+//     tft.println("NTP Sync");
+//     configTzTime(tzinfo.c_str(), ntpserver.c_str()); // Synchronize ESP32 system time with NTP
+//     delay(1000);
+//     getLocalTime(&localtime);
+
+//     // Redraw the clock
+//     tft.fillScreen(TFT_BLACK);
+//     tft.setTextColor(TFT_BLACK, TFT_WHITE);
+//     tft.setCursor (0,0);
+    
+//     // draw Date      
+//     tft.setTextColor(dateTextColor, dateBgColor);
+//     tft.drawString(dateString, 38, 0, 4);
+//     drawBuildAndSystemInfo();
+//     renderActiveScheduleEntries(localtime);
+    
+//   }
+
+//   // EVENT every min
+//   if (localtime.tm_min != event_tm_min)
+//   {
+//     event_tm_min = localtime.tm_min;
+//     Serial.println("event_tm_min");
+//     renderActiveScheduleEntries(localtime);
+//   }
+
+//   // EVENT every sec
+//   if (localtime.tm_sec != event_tm_sec)
+//   {
+//     unsigned long now_ms = millis();
+
+//     // Poll the remote server for an update to config.txt
+//     if (now_ms >= next_update_check)
+//     {
+//       if ((localtime.tm_sec % next_update_modular) == 0)
+//       {
+//         poll_update_server();
+//         next_update_check = now_ms + 1000;
+//       }
+//     }
+    
+//     event_tm_sec = localtime.tm_sec;
+//     // Serial.println("event_tm_sec");
+//     // LOCAL Time .HH:MM:SS
+//     if (tformat == "24")
+//     {
+//       // Define localtimeString and locaxtimeString as the formatted time for 24h format
+//       snprintf(localtimeString, sizeof(localtimeString), "%02d:%02d", localtime.tm_hour, localtime.tm_min);
+//       snprintf(locaxtimeString, sizeof(locaxtimeString), "%02d %02d", localtime.tm_hour, localtime.tm_min);
+//     }
+//     else
+//     {
+//       int hour12 = localtime.tm_hour % 12;
+//       if (hour12 == 0) { hour12 = 12; }
+//       // Define localtimeString and locaxtimeString as the formatted time for 12h format
+//       snprintf(localtimeString, sizeof(localtimeString), "%2d:%02d", hour12, localtime.tm_min);
+//       snprintf(locaxtimeString, sizeof(locaxtimeString), "%2d %02d", hour12, localtime.tm_min);
+//     }
+//     // draw Time to CLOCK
+//     // without Flicker with Sprite
+//     TFT_eSprite sprite = TFT_eSprite(&tft);
+//     sprite.createSprite(318, 61);
+//     sprite.fillSprite(TFT_BLACK);  // triple zero
+
+//     sprite.setFreeFont(&DSEG14_Classic_Regular_60);
+//     //sprite.setFreeFont(&seven_regular31pt7b);
+//     sprite.setTextColor(clockTextColor);  // no background overwrite
+
+//     // Set text alignment to middle-center
+//     sprite.setTextDatum(MC_DATUM);
+
+//     // Draw centered inside sprite
+//     if (localtime.tm_sec % 2 == 0) {
+//       sprite.drawString(localtimeString, sprite.width() / 2, sprite.height() / 2);
+//     } else {
+//       sprite.drawString(locaxtimeString, sprite.width() / 2, sprite.height() / 2);
+//     }
+
+//     sprite.pushSprite(1, 68);
+//     sprite.deleteSprite();
+      
+//   }
+
+//   // EVENT Pen touch
+//   #if ENABLE_TOUCH
+//   if (touch_ready && ts.tirqTouched() && ts.touched())  {
+//     TS_Point p = ts.getPoint();
+//     printTouchToSerial(p);
+
+//     if (p.y > 3200)
+//     {
+//       if (p.x < 800)
+//       {
+//         int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+//         setBrightnessFromController(mindim, "Instant min dim", true, target);
+//       }
+//       else if (p.x > 3200)
+//       {
+//         int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+//         setBrightnessFromController(maxdim, "Instant max dim", true, target);
+//       }
+//       delay(200);
+//       return;
+//     }
+
+//     // Adjust brightness
+//     // Top part of the screen
+//     if (p.y < 800) {
+//       if ((p.x >= 1200) && (p.x <= 2800))
+//       {
+//         handleSystemIdSwitchTouch();
+//         delay(300);
+//         return;
+//       }
+
+//       int brightness_step = 32;
+//       if (brightness < 64) { brightness_step = 16; }
+//       if (brightness < 32) { brightness_step = 8;  }
+//       if (brightness < 16) { brightness_step = 4;  }
+//       if (brightness < 8)  { brightness_step = 2;  }
+//       if (brightness < 4)  { brightness_step = 1;  }
+//       // Top-Left of the screen
+//       if (p.x < 800) {
+//         setBrightnessFromController(brightness - brightness_step, "Brightness", true);
+//       }
+//       // Top-right of the screen
+//       if (p.x > 3200) {
+//         setBrightnessFromController(brightness + brightness_step, "Brightness", true);
+//       }
+//     }
+//     delay(300);
+//   }
+//   #endif
+// }
 
 
 //end
