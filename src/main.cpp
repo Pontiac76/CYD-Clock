@@ -13,6 +13,10 @@
 #include "schedule_display.h"
 #include <HTTPClient.h>
 #include <LittleFS.h>
+#include <qrcode.h>
+#include <DNSServer.h>
+#include <WebServer.h>
+#include <esp_system.h>
 
 //Touch Pins
 #define XPT2046_IRQ 36
@@ -69,16 +73,39 @@ uint16_t errorTextColor = RGB565(255 >> 3, 128 >> 2, 128 >> 3);
 String updateurl;
 #define DEFAULT_UPDATE_URL "http://192.168.4.2:8080"
 
+constexpr const char *SETUP_AP_SSID = "CYD-Clock-Setup";
+constexpr const char *SETUP_AP_PASSWORD = "cydclocksetup";
+constexpr const char *SETUP_WIFI_QR_PAYLOAD = "WIFI:T:WPA;S:CYD-Clock-Setup;P:cydclocksetup;;";
+constexpr const char *SETUP_INDEX_PATH = "/html/index.html";
+constexpr const char *SETUP_CSS_PATH = "/html/index.css";
+constexpr const char *SETUP_AUTOUPDATE_PATH = "/autoupdate.txt";
+constexpr const char *SETUP_WIFI_PATH = "/wifi.txt";
+constexpr const char *SETUP_PORTAL_URL = "http://192.168.4.1/";
+constexpr byte DNS_PORT = 53;
+
 constexpr int WEEKDAY_COUNT = 7;
 constexpr int MONTH_COUNT = 12;
 constexpr int MAX_TRANSLATION_LENGTH = 24;
 constexpr int MAX_SYSTEM_ID_COUNT = 16;
+constexpr unsigned long MINUTE_MS = 60UL * 1000UL;
+constexpr int MAX_NTP_RANDOM_DELAY_SECONDS = 24 * 60 * 60;
 // Used to delay the timer when poking the updateurl
 unsigned long next_update_check = 0;
 
 SPIClass mySpi = SPIClass(HSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
+DNSServer setupDnsServer;
+WebServer setupWebServer(80);
+bool setup_portal_running = false;
+int setup_portal_station_count = -1;
+bool setup_submission_pending = false;
+unsigned long setup_submission_process_ms = 0;
+String setup_submitted_ssid;
+String setup_submitted_password;
+String setup_submitted_title;
+String setup_submitted_autoupdate_url;
+String setup_submitted_system_ids;
 
 // System variables
 String ssid;
@@ -107,12 +134,19 @@ bool sd_ready = false;
 bool touch_ready = false;
 bool touch_initialized = false;
 bool ram_only_mode = false;
+bool littlefs_ready = false;
 
 int event_tm_hour = -1;
 int event_tm_min = -1;
 int event_tm_sec = -1;
 
 int next_update_modular = 15;
+int ntp_sync_frequency_minutes = 60;
+int ntp_sync_random_delay_seconds = 60 * 60;
+int ntp_retry_frequency_minutes = 15;
+int ntp_retry_random_delay_seconds = 15 * 60;
+unsigned long next_ntp_sync_ms = 0;
+bool ntp_sync_scheduled = false;
 String build_version_code;
 
 void apply_config_from_string(String content);
@@ -124,6 +158,15 @@ void apply_current_config_with_runtime_state();
 void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback);
 void preload_all_cached_configs_from_server();
 void apply_runtime_NTP_config();
+void scheduleNextNtpSync(bool lastSyncSucceeded);
+void processScheduledNtpSync();
+String sanitizeSystemId(String value);
+bool write_text_file_to_sd(const String &path, const String &content);
+String buildSystemIdFileText(String rawValue);
+bool write_config_to_sd(String content);
+bool loadFirstWifiProfileFromLittleFs();
+String sanitizeConfigKey(String key);
+bool ensureLittleFsMounted();
 
 void logPhotoResistorReading()
 {
@@ -302,8 +345,7 @@ void processPhotoBrightness()
     photoDimTargetStep = computedStep;
     photoDimTargetBrightness = computedTarget;
   }
-  else if (targetChanged &&
-           (outsidePhotoRange || (abs(computedStep - photoDimTargetStep) >= deadzone)))
+  else if (targetChanged && (outsidePhotoRange || (abs(computedStep - photoDimTargetStep) >= deadzone)))
   {
     photoDimTargetStep = computedStep;
     photoDimTargetBrightness = computedTarget;
@@ -584,6 +626,23 @@ void end_sd_session()
   resume_touch_after_sd();
 }
 
+bool ensureLittleFsMounted()
+{
+  if (littlefs_ready)
+  {
+    return true;
+  }
+
+  if (!LittleFS.begin(false))
+  {
+    littlefs_ready = false;
+    return false;
+  }
+
+  littlefs_ready = true;
+  return true;
+}
+
 bool wifi_start_STA() //Start WiFi Mode STA
 {
   int sync_count = 0;
@@ -635,11 +694,14 @@ bool wifi_start_STA() //Start WiFi Mode STA
   return 1;
 }
 
-bool timesync()
+bool timesync(bool drawStatus = true)
 {
   bool exit_status = 1;
   Serial.println("Get NTP Time");
-  tft.println("Get NTP Time");
+  if (drawStatus)
+  {
+    tft.println("Get NTP Time");
+  }
   if (WiFi.status() == WL_CONNECTED)
   {
     struct tm local;
@@ -647,30 +709,901 @@ bool timesync()
     if (!getLocalTime(&local, 10000)) // Try to synchronize for 10 seconds
     {
       Serial.println("Timeserver cannot be reached !!!");
-      tft.println("Timeserver cannot be reached !!!");
+      if (drawStatus)
+      {
+        tft.println("Timeserver cannot be reached !!!");
+      }
       exit_status = 0;
     }
     else
     {
       Serial.print("Timeserver: ");
-      tft.print("Timeserver: ");
       Serial.println(&local, "Datum: %d.%m.%y  Zeit: %H:%M:%S Test: %a,%B");
-      tft.println(&local, "Datum: %d.%m.%y  Zeit: %H:%M:%S Test: %a,%B");
+      if (drawStatus)
+      {
+        tft.print("Timeserver: ");
+        tft.println(&local, "Datum: %d.%m.%y  Zeit: %H:%M:%S Test: %a,%B");
+      }
       Serial.flush();
     }
   }
   else
   {
     Serial.println("WiFi not connected !!!");
-    tft.println("WiFi not connected !!!");
+    if (drawStatus)
+    {
+      tft.println("WiFi not connected !!!");
+    }
     exit_status = 0;    
   }  
   return exit_status;  
 }
 
+unsigned long computeNtpDelayMs(int baseMinutes, int randomDelaySeconds)
+{
+  int sanitizedBaseMinutes = int(max(1L, long(baseMinutes)));
+  int sanitizedRandomSeconds = int(min(long(MAX_NTP_RANDOM_DELAY_SECONDS), max(0L, long(randomDelaySeconds))));
+  unsigned long delayMs = (unsigned long)sanitizedBaseMinutes * MINUTE_MS;
+
+  if (sanitizedRandomSeconds > 0)
+  {
+    delayMs += (unsigned long)random(sanitizedRandomSeconds + 1) * 1000UL;
+  }
+
+  return delayMs;
+}
+
+void scheduleNextNtpSync(bool lastSyncSucceeded)
+{
+  unsigned long delayMs = lastSyncSucceeded
+                            ? computeNtpDelayMs(ntp_sync_frequency_minutes, ntp_sync_random_delay_seconds)
+                            : computeNtpDelayMs(ntp_retry_frequency_minutes, ntp_retry_random_delay_seconds);
+
+  next_ntp_sync_ms = millis() + delayMs;
+  ntp_sync_scheduled = true;
+
+  Serial.print("Next NTP sync in ");
+  Serial.print(delayMs / 60000UL);
+  Serial.print("m ");
+  Serial.print((delayMs % 60000UL) / 1000UL);
+  Serial.println("s");
+}
+
+void processScheduledNtpSync()
+{
+  if (!ntp_sync_scheduled)
+  {
+    scheduleNextNtpSync(true);
+    return;
+  }
+
+  if (long(millis() - next_ntp_sync_ms) < 0)
+  {
+    return;
+  }
+
+  bool syncSucceeded = timesync(false);
+  scheduleNextNtpSync(syncSucceeded);
+}
+
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b) 
 {
   return RGB565(r >> 3, g >> 2, b >> 3);
+}
+
+void drawQrCode(const char *payload, const char *caption)
+{
+  constexpr uint8_t qrVersion = 5;
+  constexpr uint8_t quietZoneModules = 4;
+  QRCode qrcode;
+  uint8_t qrcodeBytes[qrcode_getBufferSize(qrVersion)];
+
+  qrcode_initText(&qrcode, qrcodeBytes, qrVersion, ECC_LOW, payload);
+
+  int totalModules = qrcode.size + (quietZoneModules * 2);
+  int availableWidth = static_cast<int>(tft.width());
+  int availableHeight = static_cast<int>(tft.height()) - 32;
+  int moduleSize = min(availableWidth, availableHeight) / totalModules;
+  moduleSize = max(1, moduleSize);
+
+  int qrPixelSize = totalModules * moduleSize;
+  int qrX = (tft.width() - qrPixelSize) / 2;
+  int qrY = 8;
+  int codeX = qrX + (quietZoneModules * moduleSize);
+  int codeY = qrY + (quietZoneModules * moduleSize);
+
+  tft.fillScreen(TFT_WHITE);
+  tft.fillRect(qrX, qrY, qrPixelSize, qrPixelSize, TFT_WHITE);
+
+  for (uint8_t y = 0; y < qrcode.size; ++y)
+  {
+    for (uint8_t x = 0; x < qrcode.size; ++x)
+    {
+      if (qrcode_getModule(&qrcode, x, y))
+      {
+        tft.fillRect(codeX + (x * moduleSize), codeY + (y * moduleSize), moduleSize, moduleSize, TFT_BLACK);
+      }
+    }
+  }
+
+  if (caption != nullptr)
+  {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawString(caption, tft.width() / 2, min(tft.height() - 12, qrY + qrPixelSize + 14), 2);
+    tft.setTextDatum(TL_DATUM);
+  }
+}
+
+void drawSetupJoinQrCode()
+{
+  drawQrCode(SETUP_WIFI_QR_PAYLOAD, "Join CYD setup AP");
+}
+
+void drawSetupPortalQrCode()
+{
+  drawQrCode(SETUP_PORTAL_URL, "Open CYD setup page");
+
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(1);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  tft.drawString(SETUP_PORTAL_URL, tft.width() / 2, tft.height() - 2, 1);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void refreshSetupPortalDisplay()
+{
+  int currentStationCount = WiFi.softAPgetStationNum();
+  if (currentStationCount == setup_portal_station_count)
+  {
+    return;
+  }
+
+  setup_portal_station_count = currentStationCount;
+  if (currentStationCount > 0)
+  {
+    Serial.print("Setup portal client connected count=");
+    Serial.println(currentStationCount);
+    drawSetupPortalQrCode();
+  }
+  else
+  {
+    Serial.println("Setup portal waiting for client");
+    drawSetupJoinQrCode();
+  }
+}
+
+bool sendLittleFsFile(const char *path, const char *contentType)
+{
+  if (!ensureLittleFsMounted())
+  {
+    return false;
+  }
+
+  File file = LittleFS.open(path, FILE_READ);
+  if (!file)
+  {
+    return false;
+  }
+
+  if (file.size() == 0)
+  {
+    file.close();
+    return false;
+  }
+
+  setupWebServer.streamFile(file, contentType);
+  file.close();
+  return true;
+}
+
+bool readLittleFsTextMounted(const char *path, String &content)
+{
+  if (!ensureLittleFsMounted())
+  {
+    content = "";
+    return false;
+  }
+
+  File file = LittleFS.open(path, FILE_READ);
+  content = "";
+  if (!file)
+  {
+    return false;
+  }
+
+  while (file.available())
+  {
+    content += char(file.read());
+  }
+
+  file.close();
+  return true;
+}
+
+bool writeLittleFsTextMounted(const char *path, const String &content)
+{
+  if (!ensureLittleFsMounted())
+  {
+    return false;
+  }
+
+  File file = LittleFS.open(path, FILE_WRITE);
+  if (!file)
+  {
+    return false;
+  }
+
+  size_t bytesWritten = file.print(content);
+  file.close();
+  return bytesWritten == content.length();
+}
+
+String escapeHtmlAttribute(String value)
+{
+  value.replace("&", "&amp;");
+  value.replace("\"", "&quot;");
+  value.replace("<", "&lt;");
+  value.replace(">", "&gt;");
+  return value;
+}
+
+String escapeHtmlText(String value)
+{
+  value.replace("&", "&amp;");
+  value.replace("<", "&lt;");
+  value.replace(">", "&gt;");
+  return value;
+}
+
+void sortStrings(String values[], int count)
+{
+  for (int outer = 0; outer < count - 1; ++outer)
+  {
+    for (int inner = outer + 1; inner < count; ++inner)
+    {
+      if (values[inner].compareTo(values[outer]) < 0)
+      {
+        String swapValue = values[outer];
+        values[outer] = values[inner];
+        values[inner] = swapValue;
+      }
+    }
+  }
+}
+
+String buildApListHtml()
+{
+  constexpr int maxRenderedNetworks = 32;
+  String networks[maxRenderedNetworks];
+  int networkCount = WiFi.scanNetworks();
+  int renderedCount = 0;
+
+  for (int index = 0; (index < networkCount) && (renderedCount < maxRenderedNetworks); ++index)
+  {
+    String networkSsid = WiFi.SSID(index);
+    networkSsid.trim();
+    if (networkSsid == "")
+    {
+      continue;
+    }
+
+    bool duplicate = false;
+    for (int existing = 0; existing < renderedCount; ++existing)
+    {
+      if (networks[existing] == networkSsid)
+      {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate)
+    {
+      continue;
+    }
+
+    networks[renderedCount] = networkSsid;
+    ++renderedCount;
+  }
+
+  WiFi.scanDelete();
+
+  if (renderedCount <= 0)
+  {
+    return "<p class=\"empty\">No APs found. Refresh the page to scan again.</p>";
+  }
+
+  sortStrings(networks, renderedCount);
+
+  String html = "<div class=\"ap-links\">";
+  for (int index = 0; index < renderedCount; ++index)
+  {
+    String escapedAttribute = escapeHtmlAttribute(networks[index]);
+    String escapedText = escapeHtmlText(networks[index]);
+    html += "<a href=\"#\" data-ssid=\"";
+    html += escapedAttribute;
+    html += "\">";
+    html += escapedText;
+    html += "</a>";
+  }
+  html += "</div>";
+  return html;
+}
+
+String sanitizeSetupField(String value)
+{
+  value.replace("\r", "");
+  value.replace("\n", "");
+  value.trim();
+  return value;
+}
+
+String sanitizeWifiSectionTitle(String value)
+{
+  value = sanitizeSetupField(value);
+  value.replace("[", "");
+  value.replace("]", "");
+  if (value == "")
+  {
+    value = "Default";
+  }
+  return value;
+}
+
+String readDefaultAutoUpdateUrl()
+{
+  String defaultUrl;
+  if (!readLittleFsTextMounted(SETUP_AUTOUPDATE_PATH, defaultUrl))
+  {
+    defaultUrl = DEFAULT_UPDATE_URL;
+  }
+
+  defaultUrl = sanitizeSetupField(defaultUrl);
+  if (defaultUrl == "")
+  {
+    defaultUrl = DEFAULT_UPDATE_URL;
+  }
+  return defaultUrl;
+}
+
+bool loadFirstWifiProfileFromLittleFs()
+{
+  String wifiText;
+  bool inFirstSection = false;
+  bool sawSection = false;
+  int start = 0;
+
+  if (!readLittleFsTextMounted(SETUP_WIFI_PATH, wifiText))
+  {
+    Serial.println("WiFi profile: LittleFS /wifi.txt missing");
+    return false;
+  }
+
+  ssid = "";
+  password = "";
+
+  while (start < wifiText.length())
+  {
+    int end = wifiText.indexOf('\n', start);
+    String line;
+    if (end == -1)
+    {
+      line = wifiText.substring(start);
+      start = wifiText.length();
+    }
+    else
+    {
+      line = wifiText.substring(start, end);
+      start = end + 1;
+    }
+
+    line.replace("\r", "");
+    line.trim();
+    if ((line == "") || line.startsWith("#"))
+    {
+      continue;
+    }
+
+    if (line.startsWith("[") && line.endsWith("]"))
+    {
+      if (sawSection)
+      {
+        break;
+      }
+      sawSection = true;
+      inFirstSection = true;
+      continue;
+    }
+
+    if (!inFirstSection)
+    {
+      continue;
+    }
+
+    int separator = line.indexOf('=');
+    if (separator == -1)
+    {
+      continue;
+    }
+
+    String key = line.substring(0, separator);
+    String value = line.substring(separator + 1);
+    key = sanitizeConfigKey(key);
+    value.replace("\r", "");
+    value.replace("\n", "");
+    value.trim();
+
+    if (key == "ssid")
+    {
+      ssid = value;
+    }
+    else if (key == "password")
+    {
+      password = value;
+    }
+    else if ((key == "autoupdate") || (key == "updateurl"))
+    {
+      updateurl = value;
+    }
+  }
+
+  if (updateurl == "")
+  {
+    updateurl = readDefaultAutoUpdateUrl();
+  }
+
+  if (ssid == "")
+  {
+    Serial.println("WiFi profile: no SSID in first /wifi.txt section");
+    return false;
+  }
+
+  Serial.print("WiFi profile loaded: ");
+  Serial.println(ssid);
+  return true;
+}
+
+String buildSystemIdConfigValue(String rawValue)
+{
+  String content = buildSystemIdFileText(rawValue);
+  content.replace("\n", ";");
+  while (content.endsWith(";"))
+  {
+    content = content.substring(0, content.length() - 1);
+  }
+  return content;
+}
+
+String buildWifiConfigText(const String &title, const String &networkSsid, const String &networkPassword, const String &autoUpdateUrl)
+{
+  String content;
+  String systemIdValue = buildSystemIdConfigValue(setup_submitted_system_ids);
+  content.reserve(title.length() + networkSsid.length() + networkPassword.length() + autoUpdateUrl.length() + systemIdValue.length() + 64);
+  content += "[";
+  content += title;
+  content += "]\n";
+  content += "ssid=";
+  content += networkSsid;
+  content += "\n";
+  content += "password=";
+  content += networkPassword;
+  content += "\n";
+  content += "autoupdate=";
+  content += autoUpdateUrl;
+  content += "\n";
+  if (systemIdValue != "")
+  {
+    content += "systemid=";
+    content += systemIdValue;
+    content += "\n";
+  }
+  return content;
+}
+
+bool writeSubmittedWifiConfig()
+{
+  String wifiConfig = buildWifiConfigText(
+    setup_submitted_title,
+    setup_submitted_ssid,
+    setup_submitted_password,
+    setup_submitted_autoupdate_url);
+
+  return writeLittleFsTextMounted(SETUP_WIFI_PATH, wifiConfig);
+}
+
+String buildSetupConfigText()
+{
+  String content;
+  content.reserve(setup_submitted_autoupdate_url.length() + 16);
+  content += "updateurl=";
+  content += setup_submitted_autoupdate_url;
+  content += "\n";
+  return content;
+}
+
+bool writeSubmittedConfigFiles()
+{
+  String configText = buildSetupConfigText();
+  bool littleFsSuccess = writeLittleFsTextMounted("/config.txt", configText);
+  bool sdSuccess = true;
+  if (!ram_only_mode)
+  {
+    sdSuccess = write_config_to_sd(configText);
+  }
+
+  if (!littleFsSuccess)
+  {
+    Serial.println("Setup: failed to write LittleFS /config.txt");
+  }
+  if (ram_only_mode)
+  {
+    Serial.println("Setup: SD unavailable; /config.txt mirror skipped");
+  }
+  if (!sdSuccess)
+  {
+    Serial.println("Setup: failed to mirror SD /config.txt");
+  }
+
+  return littleFsSuccess;
+}
+
+String buildSystemIdFieldValue()
+{
+  String value;
+  for (int index = 0; index < system_id_count; ++index)
+  {
+    if (value != "")
+    {
+      value += ";";
+    }
+    value += system_id_list[index];
+  }
+
+  String wifiText;
+  if (readLittleFsTextMounted(SETUP_WIFI_PATH, wifiText))
+  {
+    int start = 0;
+    while (start < wifiText.length())
+    {
+      int end = wifiText.indexOf('\n', start);
+      String line;
+      if (end == -1)
+      {
+        line = wifiText.substring(start);
+        start = wifiText.length();
+      }
+      else
+      {
+        line = wifiText.substring(start, end);
+        start = end + 1;
+      }
+
+      line.replace("\r", "");
+      line.trim();
+      int separator = line.indexOf('=');
+      if (separator == -1)
+      {
+        continue;
+      }
+
+      String key = line.substring(0, separator);
+      key.trim();
+      key.toLowerCase();
+      if (key != "systemid")
+      {
+        continue;
+      }
+
+      String systemIdText = buildSystemIdConfigValue(line.substring(separator + 1));
+      if (systemIdText == "")
+      {
+        continue;
+      }
+
+      if (value != "")
+      {
+        value += ";";
+      }
+      value += systemIdText;
+    }
+  }
+  return value;
+}
+
+String buildSystemIdFileText(String rawValue)
+{
+  String content;
+  int start = 0;
+
+  rawValue.replace("\r", "");
+  rawValue.replace("\n", ";");
+
+  while (start <= rawValue.length())
+  {
+    int end = rawValue.indexOf(';', start);
+    String token;
+    if (end == -1)
+    {
+      token = rawValue.substring(start);
+      start = rawValue.length() + 1;
+    }
+    else
+    {
+      token = rawValue.substring(start, end);
+      start = end + 1;
+    }
+
+    token = sanitizeSystemId(token);
+    if (token == "")
+    {
+      continue;
+    }
+
+    if (content != "")
+    {
+      content += "\n";
+    }
+    content += token;
+  }
+
+  if (content != "")
+  {
+    content += "\n";
+  }
+  return content;
+}
+
+bool writeSubmittedSystemIds()
+{
+  String content = buildSystemIdFileText(setup_submitted_system_ids);
+  if (content == "")
+  {
+    return true;
+  }
+
+  bool littleFsSuccess = writeLittleFsTextMounted("/systemid.txt", content);
+  bool sdSuccess = true;
+  if (!ram_only_mode)
+  {
+    sdSuccess = write_text_file_to_sd("/systemid.txt", content);
+  }
+
+  if (!littleFsSuccess)
+  {
+    Serial.println("Setup: failed to write LittleFS /systemid.txt");
+  }
+  if (!sdSuccess)
+  {
+    Serial.println("Setup: failed to mirror SD /systemid.txt");
+  }
+
+  return littleFsSuccess;
+}
+
+void drawSetupStatus(const char *line1, const String &line2 = "")
+{
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(bootTextColor, TFT_BLACK);
+  tft.drawString(line1, tft.width() / 2, 90, 2);
+  if (line2 != "")
+  {
+    tft.drawString(line2, tft.width() / 2, 116, 2);
+  }
+  tft.setTextDatum(TL_DATUM);
+}
+
+void rebootAfterSetupStatus(const char *line1, const String &line2 = "")
+{
+  drawSetupStatus(line1, line2);
+  delay(3000);
+  ESP.restart();
+}
+
+void sendSetupFallbackPage()
+{
+  setupWebServer.send(
+    200,
+    "text/html",
+    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>CYD setup</title></head><body><h1>CYD setup</h1>"
+    "<p>LittleFS /html/index.html is missing or empty.</p></body></html>");
+}
+
+void handleAutoUpdateText()
+{
+  setupWebServer.send(200, "text/plain", readDefaultAutoUpdateUrl());
+}
+
+void handleSetupSubmit()
+{
+  setup_submitted_ssid = sanitizeSetupField(setupWebServer.arg("ssid"));
+  setup_submitted_password = sanitizeSetupField(setupWebServer.arg("password"));
+  setup_submitted_title = sanitizeWifiSectionTitle(setupWebServer.arg("title"));
+  setup_submitted_autoupdate_url = sanitizeSetupField(setupWebServer.arg("autoupdate"));
+  setup_submitted_system_ids = sanitizeSetupField(setupWebServer.arg("systemid"));
+
+  if (setup_submitted_autoupdate_url == "")
+  {
+    setup_submitted_autoupdate_url = readDefaultAutoUpdateUrl();
+  }
+
+  if (setup_submitted_ssid == "")
+  {
+    setupWebServer.send(400, "text/plain", "AP name is required.");
+    return;
+  }
+
+  setup_submission_pending = true;
+  setup_submission_process_ms = millis() + 1000;
+  setupWebServer.send(
+    200,
+    "text/html",
+    "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>CYD setup</title></head><body><h1>Setup submitted</h1>"
+    "<p>The CYD is validating Wi-Fi and will reboot after setup completes.</p></body></html>");
+}
+
+void sendCaptivePortalRedirect()
+{
+  setupWebServer.sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
+  setupWebServer.send(302, "text/plain", "");
+}
+
+void handleSetupIndex()
+{
+  String html;
+  if (!readLittleFsTextMounted(SETUP_INDEX_PATH, html) || (html == ""))
+  {
+    sendSetupFallbackPage();
+    return;
+  }
+
+  html.replace("{{AUTOUPDATE_URL}}", escapeHtmlAttribute(readDefaultAutoUpdateUrl()));
+  html.replace("{{SYSTEM_ID_LIST}}", escapeHtmlAttribute(buildSystemIdFieldValue()));
+  html.replace("{{AP_LIST}}", buildApListHtml());
+  setupWebServer.send(200, "text/html", html);
+}
+
+void handleSetupCss()
+{
+  if (!sendLittleFsFile(SETUP_CSS_PATH, "text/css"))
+  {
+    setupWebServer.send(404, "text/plain", "Not found");
+  }
+}
+
+void fetchSubmittedAutoUpdateUrl()
+{
+  HTTPClient http;
+  Serial.print("Setup autoupdate GET: ");
+  Serial.println(setup_submitted_autoupdate_url);
+
+  http.begin(setup_submitted_autoupdate_url);
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  if (httpCode <= 0)
+  {
+    Serial.print("Setup autoupdate failed: ");
+    Serial.println(http.errorToString(httpCode));
+    http.end();
+    return;
+  }
+
+  Serial.print("Setup autoupdate HTTP code: ");
+  Serial.println(httpCode);
+  http.end();
+}
+
+void processSetupSubmission()
+{
+  if (!setup_submission_pending)
+  {
+    return;
+  }
+  if (millis() < setup_submission_process_ms)
+  {
+    return;
+  }
+
+  setup_submission_pending = false;
+  drawSetupStatus("Connecting WiFi", setup_submitted_ssid);
+
+  setupWebServer.stop();
+  setupDnsServer.stop();
+  setup_portal_running = false;
+  delay(250);
+
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(setup_submitted_ssid.c_str(), setup_submitted_password.c_str());
+
+  int connectAttempts = 0;
+  while ((WiFi.status() != WL_CONNECTED) && (connectAttempts < 150))
+  {
+    delay(100);
+    ++connectAttempts;
+  }
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("Setup WiFi connect failed");
+    rebootAfterSetupStatus("WiFi failed", setup_submitted_ssid);
+    return;
+  }
+
+  Serial.print("Setup WiFi connected IP: ");
+  Serial.println(WiFi.localIP());
+
+  if (WiFi.localIP() == IPAddress(0, 0, 0, 0))
+  {
+    rebootAfterSetupStatus("WiFi failed", "No IP address");
+    return;
+  }
+
+  if (!writeSubmittedWifiConfig())
+  {
+    rebootAfterSetupStatus("Write wifi.txt failed");
+    return;
+  }
+
+  if (!writeSubmittedSystemIds())
+  {
+    rebootAfterSetupStatus("Write systemid failed");
+    return;
+  }
+
+  if (!writeSubmittedConfigFiles())
+  {
+    rebootAfterSetupStatus("Write config failed");
+    return;
+  }
+
+  fetchSubmittedAutoUpdateUrl();
+  rebootAfterSetupStatus("Setup complete", "Rebooting...");
+}
+
+void startSetupPortal()
+{
+  if (setup_portal_running)
+  {
+    return;
+  }
+
+  if (!ensureLittleFsMounted())
+  {
+    Serial.println("Setup portal: LittleFS mount failed");
+  }
+
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASSWORD);
+  IPAddress apIp = WiFi.softAPIP();
+
+  setupDnsServer.start(DNS_PORT, "*", apIp);
+
+  setupWebServer.on("/", HTTP_GET, handleSetupIndex);
+  setupWebServer.on("/html/index.html", HTTP_GET, handleSetupIndex);
+  setupWebServer.on("/html/index.css", HTTP_GET, handleSetupCss);
+  setupWebServer.on("/autoupdate.txt", HTTP_GET, handleAutoUpdateText);
+  setupWebServer.on("/setup", HTTP_POST, handleSetupSubmit);
+
+  setupWebServer.on("/generate_204", HTTP_GET, sendCaptivePortalRedirect);
+  setupWebServer.on("/gen_204", HTTP_GET, sendCaptivePortalRedirect);
+  setupWebServer.on("/hotspot-detect.html", HTTP_GET, handleSetupIndex);
+  setupWebServer.on("/library/test/success.html", HTTP_GET, handleSetupIndex);
+  setupWebServer.on("/ncsi.txt", HTTP_GET, handleSetupIndex);
+  setupWebServer.on("/connecttest.txt", HTTP_GET, handleSetupIndex);
+  setupWebServer.onNotFound(sendCaptivePortalRedirect);
+
+  setupWebServer.begin();
+  setup_portal_running = true;
+
+  Serial.print("Setup portal AP: ");
+  Serial.println(SETUP_AP_SSID);
+  Serial.print("Setup portal URL: http://");
+  Serial.println(apIp);
 }
 
 String sanitizeTranslationToken(String token)
@@ -1068,6 +2001,16 @@ void parseConfigLine(String line)
     tzinfo = value;
   } else if (configKeyEquals(key, "ntpserver")) {
     ntpserver = value;
+  } else if (configKeyEquals(key, "ntpsyncminutes") ||
+             configKeyEquals(key, "ntpfrequencyminutes")) {
+    ntp_sync_frequency_minutes = int(max(1L, value.toInt()));
+  } else if (configKeyEquals(key, "ntpsyncrandomseconds") ||
+             configKeyEquals(key, "ntprandomdelayseconds")) {
+    ntp_sync_random_delay_seconds = int(min(long(MAX_NTP_RANDOM_DELAY_SECONDS), max(0L, value.toInt())));
+  } else if (configKeyEquals(key, "ntpretryminutes")) {
+    ntp_retry_frequency_minutes = int(max(1L, value.toInt()));
+  } else if (configKeyEquals(key, "ntpretryrandomseconds")) {
+    ntp_retry_random_delay_seconds = int(min(long(MAX_NTP_RANDOM_DELAY_SECONDS), max(0L, value.toInt())));
   } else if (configKeyEquals(key, "tformat")) {
     tformat = value;
   } else if (configKeyEquals(key, "brightness")) {
@@ -1360,7 +2303,7 @@ bool read_file_text_from_littlefs(const char *path, String &content)
   bool success = false;
 
   content = "";
-  if (!LittleFS.begin(false))
+  if (!ensureLittleFsMounted())
   {
     return false;
   }
@@ -1380,7 +2323,6 @@ bool read_file_text_from_littlefs(const char *path, String &content)
   success = true;
 
 read_file_text_from_littlefs_exit:
-  LittleFS.end();
   return success;
 }
 
@@ -1399,6 +2341,62 @@ bool read_system_id_from_littlefs()
 
   parseSystemIdList(rawSystemId);
   return true;
+}
+
+bool read_system_id_from_wifi_profile_littlefs()
+{
+  String wifiText;
+  String rawSystemId;
+  int start = 0;
+
+  if (!readLittleFsTextMounted(SETUP_WIFI_PATH, wifiText))
+  {
+    return false;
+  }
+
+  while (start < wifiText.length())
+  {
+    int end = wifiText.indexOf('\n', start);
+    String line;
+    if (end == -1)
+    {
+      line = wifiText.substring(start);
+      start = wifiText.length();
+    }
+    else
+    {
+      line = wifiText.substring(start, end);
+      start = end + 1;
+    }
+
+    line.replace("\r", "");
+    line.trim();
+    int separator = line.indexOf('=');
+    if (separator == -1)
+    {
+      continue;
+    }
+
+    String key = line.substring(0, separator);
+    key = sanitizeConfigKey(key);
+    if (key != "systemid")
+    {
+      continue;
+    }
+
+    String value = line.substring(separator + 1);
+    value.replace(";", "\n");
+    rawSystemId += value;
+    rawSystemId += "\n";
+  }
+
+  if (rawSystemId == "")
+  {
+    return false;
+  }
+
+  parseSystemIdList(rawSystemId);
+  return system_id_count > 0;
 }
 
 void list_sd_files_to_serial()
@@ -1457,7 +2455,7 @@ void list_littlefs_files_to_serial()
 
   Serial.println("LittleFS files:");
 
-  if (!LittleFS.begin(false))
+  if (!ensureLittleFsMounted())
   {
     Serial.println("  <littlefs unavailable>");
     return;
@@ -1467,7 +2465,6 @@ void list_littlefs_files_to_serial()
   if (!root)
   {
     Serial.println("  <cannot open root>");
-    LittleFS.end();
     return;
   }
 
@@ -1496,7 +2493,6 @@ void list_littlefs_files_to_serial()
   }
 
   root.close();
-  LittleFS.end();
 }
 
 String build_update_request_url()
@@ -1541,6 +2537,10 @@ void apply_current_config_with_runtime_state()
   String old_tzinfo = tzinfo;
   String old_ntpserver = ntpserver;
   String old_tformat = tformat;
+  int old_ntp_sync_frequency_minutes = ntp_sync_frequency_minutes;
+  int old_ntp_sync_random_delay_seconds = ntp_sync_random_delay_seconds;
+  int old_ntp_retry_frequency_minutes = ntp_retry_frequency_minutes;
+  int old_ntp_retry_random_delay_seconds = ntp_retry_random_delay_seconds;
   String oldWeekDays[WEEKDAY_COUNT];
   String oldMonthName[MONTH_COUNT];
   int runtimeBrightnessBeforeApply = brightness;
@@ -1560,6 +2560,14 @@ void apply_current_config_with_runtime_state()
   if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver))
   {
     apply_runtime_NTP_config();
+  }
+
+  if ((ntp_sync_frequency_minutes != old_ntp_sync_frequency_minutes) ||
+      (ntp_sync_random_delay_seconds != old_ntp_sync_random_delay_seconds) ||
+      (ntp_retry_frequency_minutes != old_ntp_retry_frequency_minutes) ||
+      (ntp_retry_random_delay_seconds != old_ntp_retry_random_delay_seconds))
+  {
+    scheduleNextNtpSync(true);
   }
 
   if ((tzinfo != old_tzinfo) || (ntpserver != old_ntpserver) ||
@@ -1664,6 +2672,17 @@ void preload_all_cached_configs_from_server()
           {
             Serial.print("Prefetch write failed for ");
             Serial.println(cachePath);
+          }
+        }
+        if (index == active_system_id_index)
+        {
+          if (!ram_only_mode && !write_config_to_sd(payload))
+          {
+            Serial.println("Prefetch legacy SD /config.txt write failed");
+          }
+          if (!writeLittleFsTextMounted("/config.txt", payload))
+          {
+            Serial.println("Prefetch LittleFS /config.txt write failed");
           }
         }
         continue;
@@ -1793,25 +2812,17 @@ void read_system_id()
   };
 
   Serial.println("read_system_id: Begin");
-  if (ram_only_mode)
+  if (read_system_id_from_littlefs())
   {
-    if (read_system_id_from_littlefs())
-    {
-      logSystemIdState("System ID source: RAM_ONLY LittleFS /systemid.txt -> ");
-    }
-    else
-    {
-      clearSystemIdList();
-      Serial.println("System ID source: none (RAM_ONLY LittleFS /systemid.txt missing)");
-    }
+    logSystemIdState("System ID source: LittleFS /systemid.txt -> ");
   }
   else if (read_system_id_from_sd())
   {
     logSystemIdState("System ID source: SD /systemid.txt -> ");
   }
-  else if (read_system_id_from_littlefs())
+  else if (read_system_id_from_wifi_profile_littlefs())
   {
-    logSystemIdState("System ID source: LittleFS /systemid.txt -> ");
+    logSystemIdState("System ID source: LittleFS /wifi.txt -> ");
   }
   else
   {
@@ -1837,11 +2848,6 @@ bool bootstrap_config_from_server()
     Serial.print("updateurl missing, using default: ");
     Serial.println(updateurl);
     tft.println("using default updateurl");
-  }
-  else
-  {
-    Serial.println("updateurl already exists, bootstrap skipped");
-    return false;
   }
 
   if (WiFi.status() != WL_CONNECTED)
@@ -1937,6 +2943,7 @@ void printTouchToSerial(TS_Point p)
 void setup() 
 {
   Serial.begin(115200);
+  randomSeed((uint32_t)esp_random());
   pinMode(XPT2046_CS, OUTPUT);
   digitalWrite(XPT2046_CS, HIGH);
 
@@ -2005,10 +3012,18 @@ void setup()
   Serial.print(" dark=");
   Serial.println(max(photoResistorBrightRaw, photoResistorDarkRaw));
 
+  if (ssid == "")
+  {
+    loadFirstWifiProfileFromLittleFs();
+  }
+
+  bool clockModeReady = false;
+
   if (ssid != "")
   {
     if (wifi_start_STA() == true)
     {
+      clockModeReady = true;
       preload_all_cached_configs_from_server();
       if ((system_id_count > 0) && cached_config_loaded[active_system_id_index])
       {
@@ -2022,7 +3037,9 @@ void setup()
 
       Serial.println("Time Sync ...");
       tft.println("Time Sync ...");
-      if (timesync() == true)
+      bool initialNtpSyncSucceeded = timesync();
+      scheduleNextNtpSync(initialNtpSyncSucceeded);
+      if (initialNtpSyncSucceeded == true)
       {
         Serial.println("Time Sync Ready");
         tft.println("Time Sync Ready");
@@ -2055,6 +3072,12 @@ void setup()
   #if ENABLE_TOUCH
   initialize_touch();
   #endif
+
+  if (!clockModeReady)
+  {
+    startSetupPortal();
+    refreshSetupPortalDisplay();
+  }
 
   delay(100);
 }
@@ -2263,50 +3286,46 @@ void handleSystemIdSwitchTouch()
   renderActiveScheduleEntries(localtime);
 }
 
-void loop() 
-{
+
+void loop() {
+  if (setup_portal_running)
+  {
+    setupDnsServer.processNextRequest();
+    setupWebServer.handleClient();
+    refreshSetupPortalDisplay();
+    processSetupSubmission();
+    return;
+  }
+
   struct tm localtime;
   getLocalTime(&localtime);
 
-  static char localtimeString[10]; // Buffer for time in HH:MM:SS format
-  static char locaxtimeString[10]; // Buffer for time in HH MM format
-  char dateString[40]; // Buffer for long translated month names
+  static char localtimeString[10];
+  static char locaxtimeString[10];
+  char dateString[40];
 
-  // processAutoBrightness(localtime);
   processPhotoBrightness();
-  
-  // EVENT every hour
+  processScheduledNtpSync();
+
   if (localtime.tm_hour != event_tm_hour) {
     event_tm_hour = localtime.tm_hour;
     Serial.println("event_tm_hour");
-    // LOCAL Date TT.MO.YYYY
-    //sprintf(dateString, "%02d.%02d.%04d", localtime.tm_mday, localtime.tm_mon + 1, localtime.tm_year + 1900);
     snprintf(dateString, sizeof(dateString),
          "%s %d, %04d",
          MonthName[localtime.tm_mon].c_str(),
          localtime.tm_mday,
          localtime.tm_year + 1900);
-    // Calculate the time zone based on the difference between local time and UTC
 
-    tft.println("NTP Sync");
-    configTzTime(tzinfo.c_str(), ntpserver.c_str()); // Synchronize ESP32 system time with NTP
-    delay(1000);
-    getLocalTime(&localtime);
-
-    // Redraw the clock
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_BLACK, TFT_WHITE);
     tft.setCursor (0,0);
-    
-    // draw Date      
+
     tft.setTextColor(dateTextColor, dateBgColor);
     tft.drawString(dateString, 38, 0, 4);
     drawBuildAndSystemInfo();
     renderActiveScheduleEntries(localtime);
-    
   }
 
-  // EVENT every min
   if (localtime.tm_min != event_tm_min)
   {
     event_tm_min = localtime.tm_min;
@@ -2314,12 +3333,10 @@ void loop()
     renderActiveScheduleEntries(localtime);
   }
 
-  // EVENT every sec
   if (localtime.tm_sec != event_tm_sec)
   {
     unsigned long now_ms = millis();
 
-    // Poll the remote server for an update to config.txt
     if (now_ms >= next_update_check)
     {
       if ((localtime.tm_sec % next_update_modular) == 0)
@@ -2328,13 +3345,10 @@ void loop()
         next_update_check = now_ms + 1000;
       }
     }
-    
+
     event_tm_sec = localtime.tm_sec;
-    // Serial.println("event_tm_sec");
-    // LOCAL Time .HH:MM:SS
     if (tformat == "24")
     {
-      // Define localtimeString and locaxtimeString as the formatted time for 24h format
       snprintf(localtimeString, sizeof(localtimeString), "%02d:%02d", localtime.tm_hour, localtime.tm_min);
       snprintf(locaxtimeString, sizeof(locaxtimeString), "%02d %02d", localtime.tm_hour, localtime.tm_min);
     }
@@ -2342,24 +3356,18 @@ void loop()
     {
       int hour12 = localtime.tm_hour % 12;
       if (hour12 == 0) { hour12 = 12; }
-      // Define localtimeString and locaxtimeString as the formatted time for 12h format
       snprintf(localtimeString, sizeof(localtimeString), "%2d:%02d", hour12, localtime.tm_min);
       snprintf(locaxtimeString, sizeof(locaxtimeString), "%2d %02d", hour12, localtime.tm_min);
     }
-    // draw Time to CLOCK
-    // without Flicker with Sprite
+
     TFT_eSprite sprite = TFT_eSprite(&tft);
     sprite.createSprite(318, 61);
-    sprite.fillSprite(TFT_BLACK);  // triple zero
+    sprite.fillSprite(TFT_BLACK);
 
     sprite.setFreeFont(&DSEG14_Classic_Regular_60);
-    //sprite.setFreeFont(&seven_regular31pt7b);
-    sprite.setTextColor(clockTextColor);  // no background overwrite
-
-    // Set text alignment to middle-center
+    sprite.setTextColor(clockTextColor);
     sprite.setTextDatum(MC_DATUM);
 
-    // Draw centered inside sprite
     if (localtime.tm_sec % 2 == 0) {
       sprite.drawString(localtimeString, sprite.width() / 2, sprite.height() / 2);
     } else {
@@ -2368,10 +3376,8 @@ void loop()
 
     sprite.pushSprite(1, 68);
     sprite.deleteSprite();
-      
   }
 
-  // EVENT Pen touch
   #if ENABLE_TOUCH
   if (touch_ready && ts.tirqTouched() && ts.touched())  {
     TS_Point p = ts.getPoint();
@@ -2393,8 +3399,6 @@ void loop()
       return;
     }
 
-    // Adjust brightness
-    // Top part of the screen
     if (p.y < 800) {
       if ((p.x >= 1200) && (p.x <= 2800))
       {
@@ -2409,11 +3413,9 @@ void loop()
       if (brightness < 16) { brightness_step = 4;  }
       if (brightness < 8)  { brightness_step = 2;  }
       if (brightness < 4)  { brightness_step = 1;  }
-      // Top-Left of the screen
       if (p.x < 800) {
         setBrightnessFromController(brightness - brightness_step, "Brightness", true);
       }
-      // Top-right of the screen
       if (p.x > 3200) {
         setBrightnessFromController(brightness + brightness_step, "Brightness", true);
       }
@@ -2422,6 +3424,166 @@ void loop()
   }
   #endif
 }
+
+// void loop() 
+// {
+//   struct tm localtime;
+//   getLocalTime(&localtime);
+
+//   static char localtimeString[10]; // Buffer for time in HH:MM:SS format
+//   static char locaxtimeString[10]; // Buffer for time in HH MM format
+//   char dateString[40]; // Buffer for long translated month names
+
+//   // processAutoBrightness(localtime);
+//   processPhotoBrightness();
+  
+//   // EVENT every hour
+//   if (localtime.tm_hour != event_tm_hour) {
+//     event_tm_hour = localtime.tm_hour;
+//     Serial.println("event_tm_hour");
+//     // LOCAL Date TT.MO.YYYY
+//     //sprintf(dateString, "%02d.%02d.%04d", localtime.tm_mday, localtime.tm_mon + 1, localtime.tm_year + 1900);
+//     snprintf(dateString, sizeof(dateString),
+//          "%s %d, %04d",
+//          MonthName[localtime.tm_mon].c_str(),
+//          localtime.tm_mday,
+//          localtime.tm_year + 1900);
+//     // Calculate the time zone based on the difference between local time and UTC
+
+//     tft.println("NTP Sync");
+//     configTzTime(tzinfo.c_str(), ntpserver.c_str()); // Synchronize ESP32 system time with NTP
+//     delay(1000);
+//     getLocalTime(&localtime);
+
+//     // Redraw the clock
+//     tft.fillScreen(TFT_BLACK);
+//     tft.setTextColor(TFT_BLACK, TFT_WHITE);
+//     tft.setCursor (0,0);
+    
+//     // draw Date      
+//     tft.setTextColor(dateTextColor, dateBgColor);
+//     tft.drawString(dateString, 38, 0, 4);
+//     drawBuildAndSystemInfo();
+//     renderActiveScheduleEntries(localtime);
+    
+//   }
+
+//   // EVENT every min
+//   if (localtime.tm_min != event_tm_min)
+//   {
+//     event_tm_min = localtime.tm_min;
+//     Serial.println("event_tm_min");
+//     renderActiveScheduleEntries(localtime);
+//   }
+
+//   // EVENT every sec
+//   if (localtime.tm_sec != event_tm_sec)
+//   {
+//     unsigned long now_ms = millis();
+
+//     // Poll the remote server for an update to config.txt
+//     if (now_ms >= next_update_check)
+//     {
+//       if ((localtime.tm_sec % next_update_modular) == 0)
+//       {
+//         poll_update_server();
+//         next_update_check = now_ms + 1000;
+//       }
+//     }
+    
+//     event_tm_sec = localtime.tm_sec;
+//     // Serial.println("event_tm_sec");
+//     // LOCAL Time .HH:MM:SS
+//     if (tformat == "24")
+//     {
+//       // Define localtimeString and locaxtimeString as the formatted time for 24h format
+//       snprintf(localtimeString, sizeof(localtimeString), "%02d:%02d", localtime.tm_hour, localtime.tm_min);
+//       snprintf(locaxtimeString, sizeof(locaxtimeString), "%02d %02d", localtime.tm_hour, localtime.tm_min);
+//     }
+//     else
+//     {
+//       int hour12 = localtime.tm_hour % 12;
+//       if (hour12 == 0) { hour12 = 12; }
+//       // Define localtimeString and locaxtimeString as the formatted time for 12h format
+//       snprintf(localtimeString, sizeof(localtimeString), "%2d:%02d", hour12, localtime.tm_min);
+//       snprintf(locaxtimeString, sizeof(locaxtimeString), "%2d %02d", hour12, localtime.tm_min);
+//     }
+//     // draw Time to CLOCK
+//     // without Flicker with Sprite
+//     TFT_eSprite sprite = TFT_eSprite(&tft);
+//     sprite.createSprite(318, 61);
+//     sprite.fillSprite(TFT_BLACK);  // triple zero
+
+//     sprite.setFreeFont(&DSEG14_Classic_Regular_60);
+//     //sprite.setFreeFont(&seven_regular31pt7b);
+//     sprite.setTextColor(clockTextColor);  // no background overwrite
+
+//     // Set text alignment to middle-center
+//     sprite.setTextDatum(MC_DATUM);
+
+//     // Draw centered inside sprite
+//     if (localtime.tm_sec % 2 == 0) {
+//       sprite.drawString(localtimeString, sprite.width() / 2, sprite.height() / 2);
+//     } else {
+//       sprite.drawString(locaxtimeString, sprite.width() / 2, sprite.height() / 2);
+//     }
+
+//     sprite.pushSprite(1, 68);
+//     sprite.deleteSprite();
+      
+//   }
+
+//   // EVENT Pen touch
+//   #if ENABLE_TOUCH
+//   if (touch_ready && ts.tirqTouched() && ts.touched())  {
+//     TS_Point p = ts.getPoint();
+//     printTouchToSerial(p);
+
+//     if (p.y > 3200)
+//     {
+//       if (p.x < 800)
+//       {
+//         int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+//         setBrightnessFromController(mindim, "Instant min dim", true, target);
+//       }
+//       else if (p.x > 3200)
+//       {
+//         int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
+//         setBrightnessFromController(maxdim, "Instant max dim", true, target);
+//       }
+//       delay(200);
+//       return;
+//     }
+
+//     // Adjust brightness
+//     // Top part of the screen
+//     if (p.y < 800) {
+//       if ((p.x >= 1200) && (p.x <= 2800))
+//       {
+//         handleSystemIdSwitchTouch();
+//         delay(300);
+//         return;
+//       }
+
+//       int brightness_step = 32;
+//       if (brightness < 64) { brightness_step = 16; }
+//       if (brightness < 32) { brightness_step = 8;  }
+//       if (brightness < 16) { brightness_step = 4;  }
+//       if (brightness < 8)  { brightness_step = 2;  }
+//       if (brightness < 4)  { brightness_step = 1;  }
+//       // Top-Left of the screen
+//       if (p.x < 800) {
+//         setBrightnessFromController(brightness - brightness_step, "Brightness", true);
+//       }
+//       // Top-right of the screen
+//       if (p.x > 3200) {
+//         setBrightnessFromController(brightness + brightness_step, "Brightness", true);
+//       }
+//     }
+//     delay(300);
+//   }
+//   #endif
+// }
 
 
 //end

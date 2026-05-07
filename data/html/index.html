@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CYD Wi-Fi Setup</title>
+  <link rel="stylesheet" href="/html/index.css">
+</head>
+<body>
+  <h1>CYD Wi-Fi Setup</h1>
+  <section class="ap-list">
+    <h2>Available APs</h2>
+    {{AP_LIST}}
+  </section>
+
+  <form method="post" action="/setup">
+    <label for="ssid">AP name</label>
+    <input id="ssid" name="ssid" type="text" autocomplete="off" required>
+
+    <label for="password">AP password</label>
+    <input id="password" name="password" type="text" autocomplete="off">
+
+    <label for="title">AP title</label>
+    <input id="title" name="title" type="text" autocomplete="off" placeholder="Home">
+
+    <label for="autoupdate">Default update URL</label>
+    <input id="autoupdate" name="autoupdate" type="url" autocomplete="off" value="{{AUTOUPDATE_URL}}">
+
+    <label for="systemid">Device IDs (Name your CYD, semi-colon delimited for multiple entries)</label>
+    <input id="systemid" name="systemid" type="text" autocomplete="off" value="{{SYSTEM_ID_LIST}}">
+
+    <button type="submit">Submit</button>
+  </form>
+
+  <script>
+    const cookieName = 'cyd_wifi_setup';
+    const form = document.querySelector('form');
+    const fields = ['ssid', 'password', 'title'];
+
+    function readSetupCookie() {
+      const prefix = cookieName + '=';
+      const item = document.cookie
+        .split(';')
+        .map((part) => part.trim())
+        .find((part) => part.startsWith(prefix));
+
+      if (!item) {
+        return {};
+      }
+
+      try {
+        return JSON.parse(decodeURIComponent(item.slice(prefix.length)));
+      } catch (error) {
+        return {};
+      }
+    }
+
+    function writeSetupCookie() {
+      const values = {};
+      fields.forEach((name) => {
+        const input = document.getElementById(name);
+        if (input) {
+          values[name] = input.value;
+        }
+      });
+
+      document.cookie = cookieName + '=' + encodeURIComponent(JSON.stringify(values)) +
+        '; max-age=31536000; path=/; SameSite=Lax';
+    }
+
+    const saved = readSetupCookie();
+    fields.forEach((name) => {
+      const input = document.getElementById(name);
+      if (input && saved[name]) {
+        input.value = saved[name];
+      }
+    });
+
+    if (form) {
+      form.addEventListener('submit', writeSetupCookie);
+    }
+
+    document.querySelectorAll('[data-ssid]').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        const ssid = link.dataset.ssid || '';
+        const ssidInput = document.getElementById('ssid');
+        const titleInput = document.getElementById('title');
+
+        if (ssidInput) {
+          ssidInput.value = ssid;
+        }
+        if (titleInput) {
+          titleInput.value = ssid;
+        }
+      });
+    });
+  </script>
+</body>
+</html>

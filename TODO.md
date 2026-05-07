@@ -46,6 +46,16 @@ This file tracks remaining work only.
 - Allow fallback across multiple home APs, phone hotspot, travel router, and other known networks.
 - Build toward a UI flow for selecting a Wi-Fi network on-device.
 - Build toward an input method for entering or updating Wi-Fi passwords on-device.
+- Add a long-press gesture to put the CYD into configuration mode without requiring text entry on the CYD display.
+- On configuration-mode entry, determine whether the unit is online by checking the current network connection state.
+- If the unit is already connected to the LAN, start only the web configuration server and do not enter AP mode.
+- If the unit is not connected, start setup AP mode, show a QR code for the phone to join the CYD setup AP, and use that flow only to get the CYD onto a working Wi-Fi network.
+- After Wi-Fi recovery/setup completes, return to normal clock mode as usual.
+- Require a second long-press after network recovery to enter the full configuration web interface.
+- In LAN configuration mode, show the device IP address on the CYD display so desktops, laptops, and phones can connect over the local network.
+- Show a short six-digit code on the CYD display and require it in the web configuration page as a lightweight 2FA/physical-presence check.
+- A QR code should be displayed for phones to quick-connect to via their browser to manage the CYD
+- Keep the CYD display limited to QR codes, status, IP address, and short verification codes; avoid building an on-device virtual keyboard.
 
 ## Dimming Follow-Up
 
