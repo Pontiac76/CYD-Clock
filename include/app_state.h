@@ -10,4 +10,5 @@ extern String tformat;
 extern String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
 extern TFT_eSPI tft;
 extern uint16_t scheduleTextColor;
+extern bool ram_only_mode;
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b);
