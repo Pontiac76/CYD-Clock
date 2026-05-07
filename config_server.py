@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from gen_tzinfo import build_posix_tz_from_zdump
 
-SOURCE_FILE = Path("data/config.txt")
+SOURCE_FILE = Path("_private/config.txt")
 TEMP_DIR = Path("temp")
 ZONEINFO_ROOT = Path("/usr/share/zoneinfo")
 HEADER_PREFIX = "# CFG "

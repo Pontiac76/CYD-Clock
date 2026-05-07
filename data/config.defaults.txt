@@ -1,0 +1,40 @@
+# Network Info
+ntpserver=pool.ntp.org
+
+# UI INfo
+# 12/24 hour format
+tformat=12
+# Day/Month naming convention
+WeekDays=Mo,Tu,We,Th,Fr,Sa,Su
+MonthName=Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
+# How bright is the display at boot
+brightness=64
+# Range of brigtness.  When mindim=1, screen is 'practically' off.
+mindim=10
+maxdim=72
+# Color schemes in RRGGBB format
+clockcolor=#00FF00
+datecolor=#FFFFFF
+datebgcolor=#00005A
+statuscolor=#FFFFFF
+statusbgcolor=#FF00FF
+schedulecolor=#FFFF00
+bootcolor=#80FF80
+errorcolor=#FF8080
+
+# Bright environment = 0; Dark environment = 2048
+# The lower the resistor value, the brighter your environment is
+photoresistorrange=000,700
+# How many stops do we make for adjusting the display?
+photodimsteps=20
+# To avoid brightness flicker, when should we jump to the next level?
+photodimdeadzone=2
+hourspan=1
+# Temporary manual brightness adjustment
+autodimholdms=5000
+autodimstepms=50
+autodimpercent=1
+
+# Debugging
+# Display on the serial line debug info about dimming
+autodimdebug=0
