@@ -1,6 +1,7 @@
 #include "network_manager.h"
 
 #include "app_state.h"
+#include "config_manager.h"
 #include "schedule_display.h"
 #include "storage_manager.h"
 
@@ -9,13 +10,6 @@
 #include <WiFi.h>
 #include <esp_system.h>
 #include <time.h>
-
-void apply_config_from_string(String content);
-void apply_current_config_with_runtime_state();
-void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback);
-bool configContentEqualsNormalized(const String &left, const String &right);
-String get_config_cache_path_for_id(const String &id);
-bool sync_config_to_sd_and_memory(String newContent, bool &changed);
 
 bool wifi_start_STA() //Start WiFi Mode STA
 {

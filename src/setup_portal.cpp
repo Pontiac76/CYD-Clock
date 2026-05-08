@@ -1,6 +1,7 @@
 #include "setup_portal.h"
 
 #include "app_state.h"
+#include "config_manager.h"
 #include "display_manager.h"
 #include "network_manager.h"
 #include "storage_manager.h"
@@ -33,9 +34,6 @@ String setup_submitted_title;
 String setup_submitted_autoupdate_url;
 String setup_submitted_system_ids;
 
-String sanitizeSystemId(String value);
-String sanitizeConfigKey(String key);
-String buildSystemIdFileText(String rawValue);
 
 bool isSetupPortalRunning()
 {
@@ -465,49 +463,6 @@ String buildSystemIdFieldValue()
     }
   }
   return value;
-}
-
-String buildSystemIdFileText(String rawValue)
-{
-  String content;
-  int start = 0;
-
-  rawValue.replace("\r", "");
-  rawValue.replace("\n", ";");
-
-  while (start <= rawValue.length())
-  {
-    int end = rawValue.indexOf(';', start);
-    String token;
-    if (end == -1)
-    {
-      token = rawValue.substring(start);
-      start = rawValue.length() + 1;
-    }
-    else
-    {
-      token = rawValue.substring(start, end);
-      start = end + 1;
-    }
-
-    token = sanitizeSystemId(token);
-    if (token == "")
-    {
-      continue;
-    }
-
-    if (content != "")
-    {
-      content += "\n";
-    }
-    content += token;
-  }
-
-  if (content != "")
-  {
-    content += "\n";
-  }
-  return content;
 }
 
 bool writeSubmittedSystemIds()

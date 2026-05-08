@@ -2,6 +2,7 @@
 
 #include "app_state.h"
 #include "brightness_manager.h"
+#include "config_manager.h"
 #include "display_manager.h"
 #include "network_manager.h"
 #include "schedule_display.h"
@@ -14,10 +15,6 @@ SPIClass mySpi = SPIClass(HSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 bool touch_ready = false;
 bool touch_initialized = false;
-
-bool advanceActiveSystemId();
-void apply_current_config_with_runtime_state();
-void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback);
 
 void initialize_touch()
 {
