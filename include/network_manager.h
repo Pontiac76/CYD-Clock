@@ -2,6 +2,7 @@
 
 #include "Arduino.h"
 
+constexpr const char *DEFAULT_UPDATE_URL = "http://192.168.4.2:8080";
 constexpr unsigned long MINUTE_MS = 60UL * 1000UL;
 constexpr int MAX_NTP_RANDOM_DELAY_SECONDS = 24 * 60 * 60;
 

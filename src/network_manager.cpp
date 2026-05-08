@@ -10,8 +10,6 @@
 #include <esp_system.h>
 #include <time.h>
 
-#define DEFAULT_UPDATE_URL "http://192.168.4.2:8080"
-
 void apply_config_from_string(String content);
 void apply_current_config_with_runtime_state();
 void load_cached_config_for_index_from_storage(int index, bool allowLegacyFallback);
