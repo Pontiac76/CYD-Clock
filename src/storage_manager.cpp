@@ -9,6 +9,7 @@
 constexpr int SD_CS = 5;
 bool sd_ready = false;
 bool littlefs_ready = false;
+bool ram_only_mode = false;
 
 bool detect_sd_available_at_boot()
 {

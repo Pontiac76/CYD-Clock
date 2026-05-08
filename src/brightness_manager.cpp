@@ -4,6 +4,27 @@
 
 constexpr unsigned long photoResistorLogIntervalMs = 1000;
 
+int photoResistorBrightRaw = 100;
+int photoResistorDarkRaw = 1024;
+int photoDimSteps = 10;
+int photoDimDeadzone = 2;
+int photoDimTargetStep = -1;
+int photoDimTargetBrightness = -1;
+int brightness = 128; // Brightness (0-255)
+int mindim = 32;
+int maxdim = 128;
+int hourspan = 1;
+String sunrise_time = "06:00";
+String sunset_time = "18:00";
+unsigned long next_auto_dim_ms = 0;
+unsigned long auto_dim_resume_ms = 0;
+unsigned long next_photoresistor_log_ms = 0;
+int autodim_hold_ms = 2000;
+int autodim_step_ms = 1000;
+int autodim_percent = 10;
+bool autodim_debug = false;
+unsigned long next_autodim_debug_ms = 0;
+
 void logPhotoResistorReading()
 {
   unsigned long nowMs = millis();

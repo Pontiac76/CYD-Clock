@@ -8,12 +8,75 @@
 
 #define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
 
+TFT_eSPI tft = TFT_eSPI();
+
+uint16_t clockTextColor = TFT_RED;
+uint16_t dateTextColor = TFT_WHITE;
+uint16_t dateBgColor = RGB565(0, 0, 90 >> 3);
+uint16_t statusTextColor = TFT_WHITE;
+uint16_t statusBgColor = RGB565(0, 0, 90 >> 3);
+uint16_t scheduleTextColor = RGB565(255 >> 3, 220 >> 2, 160 >> 3);
+uint16_t bootTextColor = RGB565(128 >> 3, 255 >> 2, 128 >> 3);
+uint16_t errorTextColor = RGB565(255 >> 3, 128 >> 2, 128 >> 3);
+String build_version_code;
+
+int event_tm_hour = -1;
+int event_tm_min = -1;
+int event_tm_sec = -1;
+
 constexpr const char *SETUP_WIFI_QR_PAYLOAD = "WIFI:T:WPA;S:CYD-Clock-Setup;P:cydclocksetup;;";
 constexpr const char *SETUP_PORTAL_URL = "http://192.168.4.1/";
 
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b)
 {
   return RGB565(r >> 3, g >> 2, b >> 3);
+}
+
+int monthFromDateAbbrev(const char *abbrev)
+{
+  if (strncmp(abbrev, "Jan", 3) == 0) return 1;
+  if (strncmp(abbrev, "Feb", 3) == 0) return 2;
+  if (strncmp(abbrev, "Mar", 3) == 0) return 3;
+  if (strncmp(abbrev, "Apr", 3) == 0) return 4;
+  if (strncmp(abbrev, "May", 3) == 0) return 5;
+  if (strncmp(abbrev, "Jun", 3) == 0) return 6;
+  if (strncmp(abbrev, "Jul", 3) == 0) return 7;
+  if (strncmp(abbrev, "Aug", 3) == 0) return 8;
+  if (strncmp(abbrev, "Sep", 3) == 0) return 9;
+  if (strncmp(abbrev, "Oct", 3) == 0) return 10;
+  if (strncmp(abbrev, "Nov", 3) == 0) return 11;
+  if (strncmp(abbrev, "Dec", 3) == 0) return 12;
+  return 0;
+}
+
+String getBuildVersionCode()
+{
+  char dateMonth[4];
+  int day = 0;
+  int year = 0;
+  int hour = 0;
+  int minute = 0;
+  char buffer[11];
+
+  if (sscanf(__DATE__, "%3s %d %d", dateMonth, &day, &year) != 3)
+  {
+    return "0000000000";
+  }
+
+  if (sscanf(__TIME__, "%d:%d", &hour, &minute) != 2)
+  {
+    return "0000000000";
+  }
+
+  int month = monthFromDateAbbrev(dateMonth);
+  if (month == 0)
+  {
+    return "0000000000";
+  }
+
+  snprintf(buffer, sizeof(buffer), "%02d%02d%02d%02d%02d",
+           year % 100, month, day, hour, minute);
+  return String(buffer);
 }
 
 void drawBuildAndSystemInfo()

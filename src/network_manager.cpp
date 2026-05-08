@@ -11,6 +11,15 @@
 #include <esp_system.h>
 #include <time.h>
 
+unsigned long next_update_check = 0;
+int next_update_modular = 15;
+int ntp_sync_frequency_minutes = 60;
+int ntp_sync_random_delay_seconds = 60 * 60;
+int ntp_retry_frequency_minutes = 15;
+int ntp_retry_random_delay_seconds = 15 * 60;
+unsigned long next_ntp_sync_ms = 0;
+bool ntp_sync_scheduled = false;
+
 bool wifi_start_STA() //Start WiFi Mode STA
 {
   int sync_count = 0;

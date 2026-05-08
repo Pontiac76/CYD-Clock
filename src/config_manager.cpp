@@ -15,6 +15,30 @@ constexpr int MAX_TRANSLATION_LENGTH = 24;
 constexpr int MAX_SYSTEM_ID_COUNT = 16;
 constexpr const char *SETUP_WIFI_PATH = "/wifi.txt";
 
+String ssid;
+String password;
+String tzinfo;
+String tformat;
+String ntpserver;
+String updateurl;
+String WeekDays[WEEKDAY_COUNT] = {
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+};
+String MonthName[MONTH_COUNT] = {
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+};
+String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
+String current_config_text;
+String system_id;
+String system_id_list[MAX_SYSTEM_ID_COUNT];
+int system_id_count = 0;
+int active_system_id_index = 0;
+int system_id_clear_pixel_width = 0;
+String cached_config_texts[MAX_SYSTEM_ID_COUNT];
+bool cached_config_loaded[MAX_SYSTEM_ID_COUNT] = { false };
+String config_source_state[MAX_SYSTEM_ID_COUNT];
+
 String sanitizeTranslationToken(String token)
 {
   token.replace("\r", "");

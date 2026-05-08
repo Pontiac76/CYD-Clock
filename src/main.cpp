@@ -1,12 +1,8 @@
 #include "Arduino.h"
-#include <SD.h>
-#include <SPI.h>
 #include <TFT_eSPI.h>
-#include <WiFi.h>
 #include <time.h>
 //#include <sunset.h>
 #include "seven_regular11pt7b.h"
-#include "seven_regular31pt7b.h"
 #include "DSEG14_Classic_Regular_60.h"
 #include "app_state.h"
 #include "brightness_manager.h"
@@ -18,140 +14,6 @@
 #include "storage_manager.h"
 #include "touch_manager.h"
 #include <esp_system.h>
-
-//SD Card Pin
-#define SD_CS 5
-
-//Backlight and photoresistor pins are defined in brightness_manager.h
-int photoResistorBrightRaw = 100;
-int photoResistorDarkRaw = 1024;
-int photoDimSteps = 10;
-int photoDimDeadzone = 2;
-int photoDimTargetStep = -1;
-int photoDimTargetBrightness = -1;
-int brightness = 128; // Brightness (0-255)
-int mindim = 32;
-int maxdim = 128;
-int hourspan = 1;
-String sunrise_time = "06:00";
-String sunset_time = "18:00";
-unsigned long next_auto_dim_ms = 0;
-unsigned long auto_dim_resume_ms = 0;
-unsigned long next_photoresistor_log_ms = 0;
-int autodim_hold_ms = 2000;
-int autodim_step_ms = 1000;
-int autodim_percent = 10;
-bool autodim_debug = false;
-unsigned long next_autodim_debug_ms = 0;
-
-// RGB conversion
-#define RGB565(r, g, b) (((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F))
-
-uint16_t clockTextColor = TFT_RED;
-uint16_t dateTextColor = TFT_WHITE;
-uint16_t dateBgColor = RGB565(0, 0, 90 >> 3);
-uint16_t statusTextColor = TFT_WHITE;
-uint16_t statusBgColor = RGB565(0, 0, 90 >> 3);
-uint16_t scheduleTextColor = RGB565(255 >> 3, 220 >> 2, 160 >> 3);
-uint16_t bootTextColor = RGB565(128 >> 3, 255 >> 2, 128 >> 3);
-uint16_t errorTextColor = RGB565(255 >> 3, 128 >> 2, 128 >> 3);
-
-// Default URL to pull config.txt from -- Hard coding is bad m'kay... don't follow this example
-String updateurl;
-constexpr int WEEKDAY_COUNT = 7;
-constexpr int MONTH_COUNT = 12;
-constexpr int MAX_TRANSLATION_LENGTH = 24;
-constexpr int MAX_SYSTEM_ID_COUNT = 16;
-// Used to delay the timer when poking the updateurl
-unsigned long next_update_check = 0;
-
-TFT_eSPI tft = TFT_eSPI();
-
-// System variables
-String ssid;
-String password;
-String tzinfo;
-String tformat;
-String ntpserver;
-String WeekDays[WEEKDAY_COUNT] = {
-  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
-};
-String MonthName[MONTH_COUNT] = {
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December"
-};
-String ScheduleEntries[MAX_SCHEDULE_ENTRIES];
-String current_config_text;
-String system_id;
-String system_id_list[MAX_SYSTEM_ID_COUNT];
-int system_id_count = 0;
-int active_system_id_index = 0;
-int system_id_clear_pixel_width = 0;
-String cached_config_texts[MAX_SYSTEM_ID_COUNT];
-bool cached_config_loaded[MAX_SYSTEM_ID_COUNT] = { false };
-String config_source_state[MAX_SYSTEM_ID_COUNT];
-bool ram_only_mode = false;
-
-int event_tm_hour = -1;
-int event_tm_min = -1;
-int event_tm_sec = -1;
-
-int next_update_modular = 15;
-int ntp_sync_frequency_minutes = 60;
-int ntp_sync_random_delay_seconds = 60 * 60;
-int ntp_retry_frequency_minutes = 15;
-int ntp_retry_random_delay_seconds = 15 * 60;
-unsigned long next_ntp_sync_ms = 0;
-bool ntp_sync_scheduled = false;
-String build_version_code;
-
-
-int monthFromDateAbbrev(const char *abbrev)
-{
-  if (strncmp(abbrev, "Jan", 3) == 0) return 1;
-  if (strncmp(abbrev, "Feb", 3) == 0) return 2;
-  if (strncmp(abbrev, "Mar", 3) == 0) return 3;
-  if (strncmp(abbrev, "Apr", 3) == 0) return 4;
-  if (strncmp(abbrev, "May", 3) == 0) return 5;
-  if (strncmp(abbrev, "Jun", 3) == 0) return 6;
-  if (strncmp(abbrev, "Jul", 3) == 0) return 7;
-  if (strncmp(abbrev, "Aug", 3) == 0) return 8;
-  if (strncmp(abbrev, "Sep", 3) == 0) return 9;
-  if (strncmp(abbrev, "Oct", 3) == 0) return 10;
-  if (strncmp(abbrev, "Nov", 3) == 0) return 11;
-  if (strncmp(abbrev, "Dec", 3) == 0) return 12;
-  return 0;
-}
-
-String getBuildVersionCode()
-{
-  char dateMonth[4];
-  int day = 0;
-  int year = 0;
-  int hour = 0;
-  int minute = 0;
-  char buffer[11];
-
-  if (sscanf(__DATE__, "%3s %d %d", dateMonth, &day, &year) != 3)
-  {
-    return "0000000000";
-  }
-
-  if (sscanf(__TIME__, "%d:%d", &hour, &minute) != 2)
-  {
-    return "0000000000";
-  }
-
-  int month = monthFromDateAbbrev(dateMonth);
-  if (month == 0)
-  {
-    return "0000000000";
-  }
-
-  snprintf(buffer, sizeof(buffer), "%02d%02d%02d%02d%02d",
-           year % 100, month, day, hour, minute);
-  return String(buffer);
-}
 
 // Start and Config CYD
 void setup() 

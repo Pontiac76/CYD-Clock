@@ -3,6 +3,7 @@
 #include "Arduino.h"
 
 uint16_t createColor(uint8_t r, uint8_t g, uint8_t b);
+String getBuildVersionCode();
 
 void drawBuildAndSystemInfo();
 void drawQrCode(const char *payload, const char *caption);
