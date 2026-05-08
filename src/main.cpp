@@ -1,7 +1,6 @@
 #include "Arduino.h"
 #include <SD.h>
 #include <SPI.h>
-#include <XPT2046_Touchscreen.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <time.h>
@@ -15,19 +14,12 @@
 #include "network_manager.h"
 #include "schedule_display.h"
 #include "storage_manager.h"
+#include "touch_manager.h"
 #include <HTTPClient.h>
 #include <LittleFS.h>
 #include <DNSServer.h>
 #include <WebServer.h>
 #include <esp_system.h>
-
-//Touch Pins
-#define XPT2046_IRQ 36
-#define XPT2046_MOSI 32
-#define XPT2046_MISO 39
-#define XPT2046_CLK 25
-#define XPT2046_CS 33
-#define ENABLE_TOUCH 1
 
 //SD Card Pin
 #define SD_CS 5
@@ -85,8 +77,6 @@ constexpr int MAX_SYSTEM_ID_COUNT = 16;
 // Used to delay the timer when poking the updateurl
 unsigned long next_update_check = 0;
 
-SPIClass mySpi = SPIClass(HSPI);
-XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 DNSServer setupDnsServer;
 WebServer setupWebServer(80);
@@ -123,8 +113,6 @@ int system_id_clear_pixel_width = 0;
 String cached_config_texts[MAX_SYSTEM_ID_COUNT];
 bool cached_config_loaded[MAX_SYSTEM_ID_COUNT] = { false };
 String config_source_state[MAX_SYSTEM_ID_COUNT];
-bool touch_ready = false;
-bool touch_initialized = false;
 bool ram_only_mode = false;
 
 int event_tm_hour = -1;
@@ -193,43 +181,6 @@ String getBuildVersionCode()
   snprintf(buffer, sizeof(buffer), "%02d%02d%02d%02d%02d",
            year % 100, month, day, hour, minute);
   return String(buffer);
-}
-
-void initialize_touch()
-{
-  #if ENABLE_TOUCH
-  if (!touch_initialized)
-  {
-    mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-    ts.begin(mySpi);
-    ts.setRotation(1);
-    touch_initialized = true;
-  }
-
-  digitalWrite(XPT2046_CS, HIGH);
-  touch_ready = true;
-  #endif
-}
-
-void suspend_touch_for_sd()
-{
-  #if ENABLE_TOUCH
-  if (touch_ready)
-  {
-    digitalWrite(XPT2046_CS, HIGH);
-    touch_ready = false;
-  }
-  #endif
-}
-
-void resume_touch_after_sd()
-{
-  #if ENABLE_TOUCH
-  if (!touch_ready)
-  {
-    initialize_touch();
-  }
-  #endif
 }
 
 void refreshSetupPortalDisplay()
@@ -1706,18 +1657,6 @@ void read_system_id()
   Serial.println("read_system_id: End");
 }
 
-// Debug Touch Position
-void printTouchToSerial(TS_Point p) 
-{
-  Serial.print("Pressure = ");
-  Serial.print(p.z);
-  Serial.print(", x = ");
-  Serial.print(p.x);
-  Serial.print(", y = ");
-  Serial.print(p.y);
-  Serial.println();
-}
-
 // Start and Config CYD
 void setup() 
 {
@@ -1899,75 +1838,6 @@ void apply_config_from_string(String content)
   }
 }
 
-void handleSystemIdSwitchTouch()
-{
-  struct tm localtime;
-
-  if (!advanceActiveSystemId())
-  {
-    if (system_id_count <= 0)
-    {
-      Serial.println("System ID switch ignored: no IDs loaded");
-    }
-    else
-    {
-      Serial.println("System ID switch ignored: only one ID configured");
-    }
-    return;
-  }
-
-  Serial.print("Active System ID switched to ");
-  Serial.print(system_id);
-  Serial.print(" (");
-  Serial.print(active_system_id_index + 1);
-  Serial.print("/");
-  Serial.print(system_id_count);
-  Serial.println(")");
-
-  if (!cached_config_loaded[active_system_id_index])
-  {
-    load_cached_config_for_index_from_storage(active_system_id_index, false);
-  }
-
-  if (cached_config_loaded[active_system_id_index])
-  {
-    current_config_text = cached_config_texts[active_system_id_index];
-    apply_current_config_with_runtime_state();
-    Serial.print("Switch apply source: ");
-    Serial.println(config_source_state[active_system_id_index]);
-  }
-  else
-  {
-    Serial.println("Switch apply source: MISSING");
-  }
-
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.println("Immediate update check skipped: WiFi not connected");
-  }
-  else if (!poll_update_server())
-  {
-    Serial.println("Immediate update check failed (server unavailable or bad response)");
-  }
-  else
-  {
-    Serial.println("Immediate update check complete");
-  }
-
-  if (!getLocalTime(&localtime, 1000))
-  {
-    Serial.println("Immediate redraw skipped: current time unavailable");
-    drawBuildAndSystemInfo();
-    return;
-  }
-
-  // Only redraw the system/build lane here. The date lane is handled by its
-  // normal periodic redraw path and should not be globally repainted on switch.
-  drawBuildAndSystemInfo();
-  renderActiveScheduleEntries(localtime);
-}
-
-
 void loop() {
   if (setup_portal_running)
   {
@@ -2059,51 +1929,7 @@ void loop() {
     sprite.deleteSprite();
   }
 
-  #if ENABLE_TOUCH
-  if (touch_ready && ts.tirqTouched() && ts.touched())  {
-    TS_Point p = ts.getPoint();
-    printTouchToSerial(p);
-
-    if (p.y > 3200)
-    {
-      if (p.x < 800)
-      {
-        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
-        setBrightnessFromController(mindim, "Instant min dim", true, target);
-      }
-      else if (p.x > 3200)
-      {
-        int target = computePhotoTargetBrightness(analogRead(photoResistorPin));
-        setBrightnessFromController(maxdim, "Instant max dim", true, target);
-      }
-      delay(200);
-      return;
-    }
-
-    if (p.y < 800) {
-      if ((p.x >= 1200) && (p.x <= 2800))
-      {
-        handleSystemIdSwitchTouch();
-        delay(300);
-        return;
-      }
-
-      int brightness_step = 32;
-      if (brightness < 64) { brightness_step = 16; }
-      if (brightness < 32) { brightness_step = 8;  }
-      if (brightness < 16) { brightness_step = 4;  }
-      if (brightness < 8)  { brightness_step = 2;  }
-      if (brightness < 4)  { brightness_step = 1;  }
-      if (p.x < 800) {
-        setBrightnessFromController(brightness - brightness_step, "Brightness", true);
-      }
-      if (p.x > 3200) {
-        setBrightnessFromController(brightness + brightness_step, "Brightness", true);
-      }
-    }
-    delay(300);
-  }
-  #endif
+  processTouchInput();
 }
 
 // void loop() 

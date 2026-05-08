@@ -1,18 +1,14 @@
 #include "storage_manager.h"
 
 #include "app_state.h"
+#include "touch_manager.h"
 
 #include <LittleFS.h>
 #include <SD.h>
 
 constexpr int SD_CS = 5;
-constexpr int XPT2046_CS = 33;
-
 bool sd_ready = false;
 bool littlefs_ready = false;
-
-void suspend_touch_for_sd();
-void resume_touch_after_sd();
 
 bool detect_sd_available_at_boot()
 {
