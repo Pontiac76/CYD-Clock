@@ -9,3 +9,10 @@
 /temp
 /_*
 ISSUES.md
+MEMORY.md
+memory/*.md
+!memory/.gitkeep
+SOUL.md
+USER.md
+.DS_Store
+AGENTS.md

@@ -4,12 +4,105 @@ This file tracks remaining work only.
 
 ## Next Up
 
-- Change the clock face font size and continue refining the visual layout.
+- Continue shrinking `main.cpp` toward orchestration only.
+  - Move hardware initialization into a `hardware_manager` or similar.
+  - Move boot/setup orchestration into an `app_controller` or similar.
+  - Move clock render-loop logic into `display_manager`.
+  - Move update polling timer wrapper into `network_manager`.
+- Replace broad shared globals in `app_state.h` with module getters/setters where it makes sense.
+- Change/refine the clock face font size and visual layout.
 - Add visible network status to the UI.
 - Add last successful NTP sync status to the UI.
-- Continue the config source-of-truth migration toward `data/`.
+
+## Refactor Follow-Up
+
+- Create a hardware initialization module for:
+  - serial startup
+  - random seed
+  - touch CS pin setup
+  - early TFT boot/status display
+  - configured backlight/photoresistor setup
+- Create an application controller/bootstrap module for:
+  - SD/RAM-only boot detection
+  - storage listing during boot
+  - system ID/config loading
+  - Wi-Fi/profile setup
+  - clock-mode vs setup-portal decision
+  - initial NTP sync
+- Add `processUpdatePolling(const struct tm &localtime)` to `network_manager`.
+- Add `renderClockIfNeeded(const struct tm &localtime)` to `display_manager`.
+- Gradually replace direct `extern` access with narrower APIs.
+
+## Config Source And Data Sensitivity
+
+- Continue the config source-of-truth migration toward `data/` and `_private/` separation.
 - Make LittleFS the primary known-good `config.txt` source at runtime.
 - Read SD card config second and treat it as an override layer on top of the LittleFS baseline.
+- Treat `data/config.defaults.txt` and any files pushed to LittleFS as public/default data only.
+- Ensure the local config server reads private config from `_private/config.txt` rather than public `data/config.defaults.txt` when serving personalized config.
+- Review whether any remaining sensitive data can accidentally be committed or pushed into LittleFS defaults.
+
+## Wi-Fi Configuration And Onboarding
+
+Completed baseline:
+
+- Dedicated LittleFS `/wifi.txt` support exists.
+- Setup AP/captive portal flow exists.
+- QR-code setup flow exists.
+- Setup form can write Wi-Fi profile, config, and system IDs.
+
+Remaining:
+
+- Support a list of known Wi-Fi access points rather than only using the first profile.
+- Allow fallback across multiple home APs, phone hotspot, travel router, and other known networks.
+- Build toward a UI flow for selecting a Wi-Fi network on-device or through LAN setup mode.
+- Add long-press gesture to enter configuration/setup mode intentionally.
+- On configuration-mode entry, determine whether the unit is online by checking current network connection state.
+- If already connected to LAN, start only the web configuration server and do not enter AP mode.
+- If not connected, start setup AP mode and use QR flow only to get the CYD onto working Wi-Fi.
+- After Wi-Fi recovery/setup completes, return to normal clock mode.
+- Require a second long-press after network recovery to enter the full configuration web interface.
+- In LAN configuration mode, show the device IP address on the CYD display.
+- Show a short six-digit code on the CYD display and require it in the web configuration page as lightweight physical-presence verification.
+- Add QR code for phones to open the LAN configuration page.
+- Keep the CYD display limited to QR codes, status, IP address, and short verification codes; avoid building an on-device virtual keyboard.
+
+## Connectivity And Recovery
+
+- Add on-screen network status indicators.
+- Show the age or timestamp of the last successful NTP synchronization.
+- Track Wi-Fi state in a way that can drive status icons and color states.
+- If an NTP check fails, disconnect Wi-Fi and attempt to reconnect before retrying sync.
+- Separate network credentials fully from general clock config.
+- Plan safe failure-testing methods that do not require pulling storage or disrupting the whole network.
+- Test server-unreachable behavior independently from Wi-Fi failure when possible.
+- Test NTP failure independently from general network failure when possible.
+- Use targeted firewall or service blocking to simulate unreachable resources during development.
+- Build repeatable retry/recovery tests for dead APs, bad credentials, and fallback AP selection.
+
+## OTA / Manual Firmware Update Planning
+
+Current direction:
+
+- Do not auto-install firmware updates.
+- Show an update-available indication at runtime.
+- Require explicit local user action, likely through a long-press menu, before installing firmware.
+
+Remaining planning/tasks:
+
+- Decide between standard dual-OTA partitions and custom recovery-partition design.
+- If using recovery partition:
+  - Create minimal recovery firmware with SD, TFT/status/menu, touch, partition read/write, checksum, and reboot only.
+  - Keep recovery firmware independent of Wi-Fi, clock rendering, setup portal, and config parsing.
+  - Define SD firmware directory layout, e.g. `/firmware/factory.bin`, `/firmware/factory.sha256`, downloads, and backups.
+  - Investigate reading the running app partition and writing a factory backup to SD on first boot if missing.
+  - Decide whether `factory.bin` is a full app-partition image or exact firmware image bytes.
+  - Define checksum metadata format.
+  - Define recovery restore behavior when update write fails.
+- If using standard dual OTA:
+  - Create OTA-capable partition table.
+  - Ensure firmware size remains safely below OTA slot size.
+- Add update-available state to UI, possibly as a low-priority runtime schedule/status entry.
 
 ## Scheduled Text Follow-Up
 
@@ -18,50 +111,21 @@ This file tracks remaining work only.
 - Add a future full-screen view for active and upcoming events, likely with auto-scrolling.
 - Revisit how many visible schedule lines can fit once the clock-face sizing is settled.
 
-## Connectivity And Recovery
+Overflow display example:
 
-- Add on-screen network status indicators.
-- Show the age or timestamp of the last successful NTP synchronization.
-- If an NTP check fails, disconnect Wi-Fi and attempt to reconnect before retrying sync.
-- Track Wi-Fi state in a way that can later drive status icons and color states.
-- Separate network credentials from general clock config.
-- Plan safe failure-testing methods that do not require pulling storage or disrupting the whole network.
-- Test server-unreachable behavior independently from Wi-Fi failure when possible.
-- Test NTP failure independently from general network failure when possible.
-- Use targeted firewall or service blocking to simulate unreachable resources during development.
-- Build toward repeatable retry and recovery tests for dead APs, bad credentials, and fallback AP selection.
-
-## Data sensitivity
- - The config.txt sitting in data is a file that's pushed out to littlefs.  We should consider this exact file to be available to the public that's read as a backup only after wifi is setup and processed.
- - That is going to affect the server.  The server should read the _private/config.txt file instead and use that to serve out the text file to the CYD on request
- - If this device is going to be sold to the public, it should have some foundations for a new user to use, such as connecting with BT to setup WiFi.
-
-## OTA Updates
- - Figure out what's going to be necessary for over the air updates.
-
-## Wi-Fi Configuration And Onboarding
-
-- Move Wi-Fi credentials out of `config.txt` into a dedicated `wifi.txt` file.
-- Support a list of known Wi-Fi access points rather than a single SSID/password pair.
-- Allow fallback across multiple home APs, phone hotspot, travel router, and other known networks.
-- Build toward a UI flow for selecting a Wi-Fi network on-device.
-- Build toward an input method for entering or updating Wi-Fi passwords on-device.
-- Add a long-press gesture to put the CYD into configuration mode without requiring text entry on the CYD display.
-- On configuration-mode entry, determine whether the unit is online by checking the current network connection state.
-- If the unit is already connected to the LAN, start only the web configuration server and do not enter AP mode.
-- If the unit is not connected, start setup AP mode, show a QR code for the phone to join the CYD setup AP, and use that flow only to get the CYD onto a working Wi-Fi network.
-- After Wi-Fi recovery/setup completes, return to normal clock mode as usual.
-- Require a second long-press after network recovery to enter the full configuration web interface.
-- In LAN configuration mode, show the device IP address on the CYD display so desktops, laptops, and phones can connect over the local network.
-- Show a short six-digit code on the CYD display and require it in the web configuration page as a lightweight 2FA/physical-presence check.
-- A QR code should be displayed for phones to quick-connect to via their browser to manage the CYD
-- Keep the CYD display limited to QR codes, status, IP address, and short verification codes; avoid building an on-device virtual keyboard.
+- If three events are active in the current minute but there is only room for two lines, show two entries at a time.
+- The visible pair should rotate over time based on the sorted active set.
+- Example rotation:
+  - minute 1: events 1 and 2
+  - minute 2: events 2 and 3
+  - minute 3: events 1 and 3
 
 ## Dimming Follow-Up
 
 - Decide whether time-based dimming remains the primary model.
 - Evaluate ambient-light-based dimming as an alternative or additional mode.
 - Leave room for supporting multiple dimming modes later, such as manual, time-based, and sensor-based.
+- Consider replacing remaining direct brightness globals with `brightness_manager` accessors.
 
 ## Display Asset Strategy
 
@@ -72,8 +136,8 @@ This file tracks remaining work only.
 - Keep room for combining static icons and segment-rendered text/clock elements in the same UI.
 - Use predictable generated filenames such as `WIFI_Offline`, `WIFI_Online`, and `WIFI_Reconnecting` for state-specific assets.
 - Allow one source SVG to be rendered into multiple output states by remapping its source colors through a per-state palette definition.
-- Keep source SVG colors visually obvious for editing, then convert them into related tone ranges for the generated runtime assets.
-- Use that palette-mapping approach to create flexible icons with subtle tone variation instead of maintaining separate hand-drawn assets for each state.
+- Keep source SVG colors visually obvious for editing, then convert them into related tone ranges for generated runtime assets.
+- Use palette mapping to create flexible icons with subtle tone variation instead of maintaining separate hand-drawn assets for each state.
 
 ## Server Tasks
 
@@ -82,6 +146,7 @@ This file tracks remaining work only.
 - Generate display-ready image assets from SVG sources and state-based color mappings if the server-rendered icon path is adopted.
 - Continue using shared/default schedule sections plus per-system overrides.
 - Remove perfect duplicate schedule entries after section merging so the same event is not emitted twice.
+- Add firmware metadata endpoint if manual firmware update notification is implemented.
 
 ## Non-Goals For The Next Pass
 
@@ -93,12 +158,4 @@ These are deferred features, not rejected features. They should not drive the ne
 - Schedule section parsing on the ESP32
 - Mixed wildcard semantics beyond `*|*`
 - Full dynamic layout fitting for arbitrarily many active events
-
-Overflow display example:
-
-- If three events are active in the current minute but there is only room for two lines, show two entries at a time.
-- The visible pair should rotate over time based on the sorted active set.
-- Example rotation:
-- minute 1: events 1 and 2
-- minute 2: events 2 and 3
-- minute 3: events 1 and 3
+- Fully automatic unattended firmware installation
